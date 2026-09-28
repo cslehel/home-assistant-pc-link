@@ -23,27 +23,33 @@ detection *more* likely and hurts your SmartScreen reputation.
 
 ## What actually reduces false positives
 
-1. **Run from a Python install, not a bare PyInstaller `.exe`.** Unsigned,
-   single-file PyInstaller binaries are the single most common cause of AV
-   false positives. Running `python -m pclink ...` from an official Python
-   installation avoids that entirely and is the recommended deployment here.
-
-2. **Code-sign everything you ship.** If you build an `.exe`/installer, sign it
-   with an **Authenticode** certificate:
+1. **Code-sign the executables.** An unsigned executable from an unknown
+   publisher is the most common reason for a false positive, and the
+   standalone build is no exception. The build workflow signs `pclink.exe`
+   and `pclink-agent.exe` automatically when you add a code-signing
+   certificate as two repository secrets: `SIGN_PFX_BASE64` (the `.pfx` file,
+   base64-encoded) and `SIGN_PFX_PASSWORD`. To sign by hand:
    ```powershell
-   signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 dist\pclink.exe
+   signtool sign /f cert.pfx /p <password> /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 pclink.exe pclink-agent.exe
    ```
    An **OV** certificate builds SmartScreen reputation over time; an **EV**
-   certificate gives instant SmartScreen trust. Sign both the executable and
-   the installer.
+   certificate gives instant SmartScreen trust.
 
-3. **Build cleanly** if you use PyInstaller: prefer a one-folder build over
-   one-file, don't use UPX compression (`--noupx`), and sign the result.
-   A ready spec is in `packaging/pclink.spec`.
+2. **Build cleanly.** The standalone build already follows the practices that
+   keep heuristics calm (`packaging/pclink.spec`): a one-folder build instead of
+   a self-extracting single file, no UPX compression, a Windows version
+   resource and an icon, and every build is made from public source by
+   GitHub Actions, so anyone can check what went into it.
+
+3. **Or run from a Python install.** The Python variant runs the service
+   through the official, signed `python.exe`/`pythonservice.exe`, so there is
+   no custom executable at all. It is the fallback when a strict antivirus
+   will not accept the unsigned standalone build.
 
 4. **Add an allowlist / exclusion** for the install folder on the managed PC
    (the admin does this once). Steps for Microsoft Defender are in
-   `packaging/defender-exclusion.ps1`. Do this only on machines you own.
+   `defender-exclusion.ps1` (in the zip, and in `packaging/`). Do this only
+   on machines you own.
 
 5. **Submit false-positive reports** to any vendor that flags a signed build:
    - Microsoft: https://www.microsoft.com/wdsi/filesubmission
@@ -62,11 +68,11 @@ supported Windows service ACLs instead — see [SECURITY.md](SECURITY.md).
 
 ## Recommended deployment
 
-For a home setup, the lowest-friction and lowest-false-positive path is:
+For a home setup:
 
-1. Install official Python for all users.
-2. `pip install -r requirements-windows.txt`.
-3. `python -m pclink install`.
-4. Add a Defender exclusion for the install directory.
-
-No custom binary, nothing to sign, nothing for SmartScreen to distrust.
+1. Use the standalone version from the Releases page (a signed build if you
+   have configured a certificate).
+2. Unblock the zip before extracting it, then run `install.cmd`.
+3. If your antivirus flags it, run `defender-exclusion.ps1` as administrator
+   and report the false positive to the vendor.
+4. If a strict antivirus still refuses it, use the Python install instead.

@@ -1,0 +1,7 @@
+# Everything bundled into the standalone Windows build (packaging/pclink.spec).
+# Unlike a Python install, users of the build cannot add packages later, so the
+# optional backends are included here.
+-r ../requirements-windows.txt
+pyinstaller>=6.10,<7
+pythonnet>=3.0.3      # in-process LibreHardwareMonitor sensors
+Pillow>=10.0          # JPEG screenshots

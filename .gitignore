@@ -14,3 +14,5 @@ venv/
 config.yaml
 config.local.yaml
 *.spec
+!packaging/pclink.spec
+packaging/pclink.ico

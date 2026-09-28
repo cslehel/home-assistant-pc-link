@@ -1,0 +1,175 @@
+name: Windows build
+
+# Builds the standalone Windows version (no Python needed on the PC), then tests
+# the zip exactly as a user gets it: extract, check every bundled component,
+# install and start the real service, verify it, uninstall it.
+# Tagged releases reuse this workflow (workflow_call) and attach the zip.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      version:
+        description: Version that was built
+        value: ${{ jobs.build.outputs.version }}
+      artifact:
+        description: Name of the uploaded artifact (and of the zip inside it, without .zip)
+        value: ${{ jobs.build.outputs.artifact }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test the standalone Windows version
+    runs-on: windows-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      artifact: ${{ steps.version.outputs.artifact }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-windows.txt
+            packaging/requirements-build.txt
+
+      - name: Read the version
+        id: version
+        run: |
+          $version = python -c "import pclink; print(pclink.__version__)"
+          if ($LASTEXITCODE) { exit 1 }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "artifact=PCLink-$version-windows-x64" >> $env:GITHUB_OUTPUT
+
+      - name: Install the build tools
+        run: |
+          python -m pip install --upgrade pip
+          if ($LASTEXITCODE) { exit 1 }
+          python -m pip install -r packaging/requirements-build.txt
+          if ($LASTEXITCODE) { exit 1 }
+
+      - name: Build
+        run: |
+          python packaging/make_icon.py
+          if ($LASTEXITCODE) { exit 1 }
+          pyinstaller --noconfirm --clean packaging/pclink.spec
+          if ($LASTEXITCODE) { exit 1 }
+          Copy-Item packaging/install.ps1, packaging/install.cmd, packaging/uninstall.ps1, packaging/uninstall.cmd,
+                    packaging/README-FIRST.txt, packaging/defender-exclusion.ps1, config.example.yaml, LICENSE `
+                    -Destination dist/pclink/
+
+      - name: Sign the executables (only when a code-signing certificate is configured)
+        env:
+          SIGN_PFX_BASE64: ${{ secrets.SIGN_PFX_BASE64 }}
+          SIGN_PFX_PASSWORD: ${{ secrets.SIGN_PFX_PASSWORD }}
+        run: |
+          if (-not $env:SIGN_PFX_BASE64) {
+            Write-Host "No code-signing certificate configured (secrets SIGN_PFX_BASE64 / SIGN_PFX_PASSWORD); the build is unsigned."
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP "sign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_PFX_BASE64))
+          try {
+            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+                        Sort-Object FullName -Descending | Select-Object -First 1
+            & $signtool.FullName sign /f $pfx /p $env:SIGN_PFX_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+              dist/pclink/pclink.exe dist/pclink/pclink-agent.exe
+            if ($LASTEXITCODE) { exit 1 }
+          } finally {
+            Remove-Item $pfx -Force
+          }
+
+      - name: Package
+        run: |
+          $name = "${{ steps.version.outputs.artifact }}"
+          New-Item -ItemType Directory -Path package | Out-Null
+          Copy-Item dist/pclink package/PCLink -Recurse
+          Compress-Archive -Path package/PCLink -DestinationPath "$name.zip"
+          Get-Item "$name.zip" | Format-Table Name, Length
+
+      - name: Test the executables from the extracted zip
+        run: |
+          Expand-Archive "${{ steps.version.outputs.artifact }}.zip" -DestinationPath "$env:RUNNER_TEMP\extract"
+          $dir = "$env:RUNNER_TEMP\extract\PCLink"
+          $exe = "$dir\pclink.exe"
+
+          $v = & $exe version
+          if ($LASTEXITCODE -or $v -ne "${{ steps.version.outputs.version }}") { throw "version check failed: '$v'" }
+
+          # Every backend the build is meant to bundle must be importable in the frozen program.
+          & $exe selftest --require pywin32,servicemanager,comtypes,uia,zeroconf,nvml,pythonnet,pillow,agent-exe
+          if ($LASTEXITCODE) { throw "selftest failed" }
+
+          $cfg = Join-Path $env:RUNNER_TEMP "check.yaml"
+          & $exe init-config --path $cfg
+          if ($LASTEXITCODE) { throw "init-config failed" }
+          & $exe check-config --config $cfg
+          if ($LASTEXITCODE) { throw "check-config failed" }
+
+          # The windowed agent starts, loads everything and refuses to run without the service (exit code 2).
+          $agent = Start-Process -FilePath "$dir\pclink-agent.exe" -PassThru -Wait
+          if ($agent.ExitCode -ne 2) { throw "pclink-agent.exe exited with $($agent.ExitCode), expected 2" }
+
+      - name: Install, run and uninstall the service
+        run: |
+          $dir = "$env:RUNNER_TEMP\extract\PCLink"
+          & "$dir\pclink.exe" init-config          # the installer stops for editing when no config exists yet
+          if ($LASTEXITCODE) { throw "init-config failed" }
+
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$dir\install.ps1" -NoPause
+          if ($LASTEXITCODE) { throw "install.ps1 failed with exit code $LASTEXITCODE" }
+
+          $svc = Get-CimInstance Win32_Service -Filter "Name='PCLink'"
+          if (-not $svc) { throw "the service was not installed" }
+          Write-Host "Service binary: $($svc.PathName)"
+          if ($svc.PathName -notlike '*\Program Files\PCLink\pclink.exe*service') { throw "unexpected service binary path" }
+          if ($svc.StartMode -ne "Auto") { throw "start mode is $($svc.StartMode), expected Auto" }
+
+          Start-Sleep -Seconds 20
+          $state = (Get-Service PCLink).Status
+          if ($state -ne "Running") { throw "the service is '$state' 20 s after starting" }
+
+          $sd = (sc.exe sdshow PCLink) -join ""
+          Write-Host "Service security descriptor: $sd"
+          if ($sd -notmatch [regex]::Escape("(A;;CCLCSWLOCRRC;;;IU)")) { throw "the hardened service ACL was not applied" }
+
+          $log = Join-Path $env:ProgramData "PCLink\logs\pclink.log"
+          if (-not (Select-String -Path $log -Pattern " starting " -Quiet)) { throw "the service log has no start message" }
+          Get-Content $log -Tail 15
+
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:ProgramFiles\PCLink\uninstall.ps1" -NoPause
+          if ($LASTEXITCODE) { throw "uninstall.ps1 failed with exit code $LASTEXITCODE" }
+          for ($i = 0; $i -lt 30 -and (Get-CimInstance Win32_Service -Filter "Name='PCLink'"); $i++) { Start-Sleep -Seconds 1 }
+          if (Get-CimInstance Win32_Service -Filter "Name='PCLink'") { throw "the service is still registered after uninstalling" }
+          if (Test-Path "$env:ProgramFiles\PCLink") { throw "the program folder is still present after uninstalling" }
+          Write-Host "Install / run / uninstall cycle passed."
+
+      - name: Show logs
+        if: failure()
+        run: |
+          Get-ChildItem "$env:ProgramData\PCLink\logs" -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "===== $($_.FullName)"; Get-Content $_.FullName -Tail 100
+          }
+          Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = (Get-Date).AddMinutes(-30) } -MaxEvents 100 -ErrorAction SilentlyContinue |
+            Where-Object { $_.ProviderName -match 'PCLink|Python|Application Error|\.NET Runtime' } | Format-List TimeCreated, ProviderName, Message
+          Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; StartTime = (Get-Date).AddMinutes(-30) } -MaxEvents 20 -ErrorAction SilentlyContinue |
+            Format-List TimeCreated, Message
+
+      - name: Upload the zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.artifact }}
+          path: ${{ steps.version.outputs.artifact }}.zip
+          if-no-files-found: error

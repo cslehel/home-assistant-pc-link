@@ -1,4 +1,4 @@
-"""Command line entry point: ``python -m pclink <command>``."""
+"""Command line entry point: ``pclink.exe <command>`` or ``python -m pclink <command>``."""
 from __future__ import annotations
 
 import argparse
@@ -11,12 +11,13 @@ import time
 from . import __version__
 from .config import Config, ConfigError, default_config_path
 from .logsetup import setup_logging
+from .runtime import AGENT_EXE, SERVICE_HOST_ARG, app_dir, cli_name, is_frozen
 
 SERVICE_COMMANDS = {"install", "remove", "update", "start", "stop", "restart", "debug", "harden", "unharden"}
 
-USAGE = f"""home-assistant-pc-link {__version__}
+USAGE = """home-assistant-pc-link {version}
 
-usage: python -m pclink <command> [options]
+usage: {cli} <command> [options]
 
 commands:
   run [--config PATH]        run the service in the foreground (console)
@@ -32,7 +33,10 @@ commands:
   test-mqtt [--config]       connect to the broker and publish a test message
   api-token                  print a fresh API token and the api: block to paste into
                              config.yaml (for the Home Assistant integration)
+  selftest [--require a,b]   show which components are available (optional backends,
+                             bundled modules); exit code 1 if a required one is missing
   agent                      (internal) per-session user agent
+  service                    (internal) service host started by Windows
   version
 """
 
@@ -53,7 +57,7 @@ def cmd_run(argv: list[str]) -> int:
     try:
         cfg = Config.load(path)
     except FileNotFoundError:
-        print(f"config not found: {path}\nrun 'python -m pclink init-config' first", file=sys.stderr)
+        print(f"config not found: {path}\nrun '{cli_name()} init-config' first", file=sys.stderr)
         return 2
     except ConfigError as exc:
         print(f"config error: {exc}", file=sys.stderr)
@@ -159,7 +163,7 @@ def cmd_pin_hash(argv: list[str]) -> int:
     from .pin import hash_pin
 
     if not argv:
-        print("usage: python -m pclink pin-hash <pin>", file=sys.stderr)
+        print(f"usage: {cli_name()} pin-hash <pin>", file=sys.stderr)
         return 2
     print(f"parent_pin_sha256: {hash_pin(argv[0])}")
     return 0
@@ -175,7 +179,8 @@ def cmd_init_config(argv: list[str]) -> int:
         print(f"{target} already exists (use --force to overwrite)")
         return 1
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    candidates = [os.path.join(here, "config.example.yaml"), os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.example.yaml")]
+    candidates = [os.path.join(here, "config.example.yaml"), os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.example.yaml"),
+                  os.path.join(app_dir(), "config.example.yaml")]
     src = next((c for c in candidates if os.path.isfile(c)), None)
     os.makedirs(os.path.dirname(target), exist_ok=True)
     if src:
@@ -185,7 +190,7 @@ def cmd_init_config(argv: list[str]) -> int:
 
         with open(target, "w", encoding="utf-8") as fh:
             fh.write(EXAMPLE_CONFIG)
-    print(f"wrote {target}; edit the MQTT settings and the users, then run 'python -m pclink check-config'")
+    print(f"wrote {target}; edit the MQTT settings and the users, then run '{cli_name()} check-config'")
     return 0
 
 
@@ -248,10 +253,77 @@ def cmd_test_mqtt(argv: list[str]) -> int:
     return 0 if ok else 1
 
 
+# name -> (import to try, required everywhere, required on Windows, what it enables)
+SELFTEST_COMPONENTS: dict[str, tuple[str, bool, bool, str]] = {
+    "psutil": ("psutil", True, True, "CPU, memory, disk and network metrics"),
+    "paho-mqtt": ("paho.mqtt.client", True, True, "MQTT transport"),
+    "pyyaml": ("yaml", True, True, "configuration file"),
+    "pywin32": ("win32api", False, True, "service, sessions, logon blocking, tray icon"),
+    "servicemanager": ("servicemanager", False, True, "running as a Windows service"),
+    "comtypes": ("comtypes.client", False, False, "browser URL, audio activity, volume control"),
+    "uia": ("<uia>", False, False, "reading the active browser tab (UI Automation)"),
+    "zeroconf": ("zeroconf", False, False, "Home Assistant auto-discovery (mDNS)"),
+    "nvml": ("pynvml", False, False, "NVIDIA GPU metrics"),
+    "pythonnet": ("clr", False, False, "in-process LibreHardwareMonitor sensors"),
+    "pillow": ("PIL.Image", False, False, "JPEG screenshots (PNG works without it)"),
+    "agent-exe": ("<agent-exe>", False, False, "per-session agent executable (standalone build)"),
+}
+
+
+def _selftest_probe(target: str) -> None:
+    """Import / exercise one component; raises when it is unavailable."""
+    import importlib
+
+    if target == "<uia>":
+        if sys.platform != "win32":
+            raise RuntimeError("Windows only")
+        import comtypes.client  # type: ignore
+
+        comtypes.client.GetModule("UIAutomationCore.dll")  # generates the typelib wrapper
+        importlib.import_module("comtypes.gen.UIAutomationClient")
+    elif target == "<agent-exe>":
+        if not is_frozen():
+            raise RuntimeError("only part of the standalone build")
+        path = os.path.join(app_dir(), AGENT_EXE)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(path)
+    else:
+        importlib.import_module(target)
+
+
+def cmd_selftest(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog=f"{cli_name()} selftest")
+    parser.add_argument("--require", default="", help="comma-separated components that must be available")
+    args = parser.parse_args(argv)
+    required = {r.strip() for r in args.require.split(",") if r.strip()}
+    unknown = required - set(SELFTEST_COMPONENTS)
+    if unknown:
+        print(f"unknown component(s): {', '.join(sorted(unknown))}; known: {', '.join(SELFTEST_COMPONENTS)}")
+        return 2
+    windows = sys.platform == "win32"
+    print(f"home-assistant-pc-link {__version__} ({'standalone build' if is_frozen() else 'Python ' + sys.version.split()[0]})")
+    print(f"executable: {sys.executable}")
+    failed = []
+    for name, (target, core, core_windows, purpose) in SELFTEST_COMPONENTS.items():
+        try:
+            _selftest_probe(target)
+            state = "ok"
+        except Exception as exc:  # noqa: BLE001
+            state = f"missing ({type(exc).__name__}: {str(exc)[:80]})"
+            if name in required or core or (windows and core_windows):
+                failed.append(name)
+        print(f"  {name:<15} {state:<45} {purpose}")
+    if failed:
+        print(f"FAILED: {', '.join(failed)}")
+        return 1
+    print("OK")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help", "help"):
-        print(USAGE)
+        print(USAGE.format(version=__version__, cli=cli_name()))
         return 0
     cmd, rest = argv[0], argv[1:]
     if cmd == "version":
@@ -263,6 +335,12 @@ def main(argv: list[str] | None = None) -> int:
         from .agent.main import main as agent_main
 
         return agent_main(rest)
+    if cmd == SERVICE_HOST_ARG:
+        from .service import run_service_host
+
+        return run_service_host()
+    if cmd == "selftest":
+        return cmd_selftest(rest)
     if cmd in SERVICE_COMMANDS or any(a in SERVICE_COMMANDS for a in argv):
         from .service import handle_command_line
 
@@ -280,7 +358,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_test_mqtt(rest)
     if cmd == "api-token":
         return cmd_api_token(rest)
-    print(USAGE)
+    print(USAGE.format(version=__version__, cli=cli_name()))
     return 1
 
 

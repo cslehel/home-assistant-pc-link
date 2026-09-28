@@ -2,8 +2,9 @@
 
 The service runs as LocalSystem in session 0 and cannot see the foreground
 window, the URL bar or user idle time of a desktop session.  For each active
-session (each ASTER seat) it launches ``pythonw.exe -m pclink.agent`` with the
-session user's token, so the agent runs as that user on that desktop.
+session (each ASTER seat) it launches the agent with the session user's token,
+so the agent runs as that user on that desktop: ``pclink-agent.exe`` in the
+standalone build, ``pythonw.exe -m pclink.agent`` from a Python install.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from .config import AgentConfig
+from .runtime import AGENT_EXE, is_frozen
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +49,26 @@ def find_pythonw(explicit: Optional[str] = None) -> str:
     return sys.executable
 
 
+def agent_command(python_path: Optional[str] = None, *, frozen: Optional[bool] = None,
+                  executable: Optional[str] = None) -> tuple[str, str, bool]:
+    """Return ``(command line, working directory, needs PYTHONPATH)`` for starting an agent.
+
+    Standalone build: ``pclink-agent.exe`` next to ``pclink.exe`` (windowed, so no
+    console flashes up), falling back to ``pclink.exe agent``.  Python install:
+    ``pythonw.exe -m pclink.agent`` with the source folder on PYTHONPATH.
+    """
+    frozen = is_frozen() if frozen is None else frozen
+    executable = os.path.abspath(executable or sys.executable)
+    if frozen:
+        base = os.path.dirname(executable)
+        agent = os.path.join(base, AGENT_EXE)
+        if os.path.isfile(agent):
+            return f'"{agent}"', base, False
+        return f'"{executable}" agent', base, False
+    python = find_pythonw(python_path)
+    return f'"{python}" -X utf8 -m pclink.agent', os.path.dirname(python), True
+
+
 def package_root() -> str:
     import pclink
 
@@ -68,8 +90,8 @@ class AgentLauncher:
         )
         self.cfg = cfg
         self.agent_settings = agent_settings
-        self.python = find_pythonw(cfg.python_path)
-        log.info("agent interpreter: %s", self.python)
+        self.command, self.cwd, self.needs_pythonpath = agent_command(cfg.python_path)
+        log.info("agent command: %s", self.command)
 
     def launch(self, session_id: int, token: str, user: str) -> Optional[AgentHandle]:
         import time
@@ -87,8 +109,9 @@ class AgentLauncher:
                 log.debug("CreateEnvironmentBlock failed: %s", exc)
                 env = dict(os.environ)
             env = {str(k): str(v) for k, v in env.items()}
-            existing = env.get("PYTHONPATH", "")
-            env["PYTHONPATH"] = package_root() + (os.pathsep + existing if existing else "")
+            if self.needs_pythonpath:
+                existing = env.get("PYTHONPATH", "")
+                env["PYTHONPATH"] = package_root() + (os.pathsep + existing if existing else "")
             env["PCLINK_SESSION"] = str(session_id)
             env["PCLINK_USER"] = user
             env["PCLINK_AGENT_TOKEN"] = token
@@ -101,9 +124,8 @@ class AgentLauncher:
             si.dwFlags = con.STARTF_USESHOWWINDOW
             si.wShowWindow = con.SW_HIDE
             flags = con.CREATE_UNICODE_ENVIRONMENT | con.CREATE_NEW_PROCESS_GROUP | getattr(con, "CREATE_NO_WINDOW", 0x08000000)
-            cmd = f'"{self.python}" -X utf8 -m pclink.agent'
-            cwd = os.path.dirname(self.python)
-            handle, thread, pid, _tid = proc.CreateProcessAsUser(user_token, None, cmd, None, None, False, flags, env, cwd, si)
+            handle, thread, pid, _tid = proc.CreateProcessAsUser(user_token, None, self.command, None, None, False,
+                                                                 flags, env, self.cwd, si)
             thread.Close()
             log.info("started agent for session %s (user %s, pid %s)", session_id, user, pid)
             return AgentHandle(session_id=session_id, pid=pid, process=handle, token=token, started_at=time.time())

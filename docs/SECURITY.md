@@ -26,7 +26,8 @@ An **administrator** can always do all of the above. That is intentional.
 ## How it is enforced
 
 Two standard Windows mechanisms, the same ones commercial parental-control
-products use, applied automatically at `python -m pclink install`:
+products use, applied automatically when the service is installed (`install.cmd`
+for the standalone version, `python -m pclink install` for a Python install):
 
 1. **A restrictive service security descriptor (DACL).** Stop, pause,
    change-config and delete rights are removed for Interactive, Service and
@@ -51,7 +52,13 @@ python -m pclink unharden    # restore default permissions (done by remove)
 sc.exe sdshow PCLink         # inspect the current descriptor
 ```
 
-`python -m pclink install --no-harden` installs without the DACL restriction.
+`python -m pclink install --no-harden` (standalone: `install.ps1 -NoHarden`) installs
+without the DACL restriction. With the standalone version, use
+`"C:\Program Files\PCLink\pclink.exe"` in place of `python -m pclink`.
+
+The standalone installer puts the program in `C:\Program Files\PCLink` on
+purpose: the service runs as SYSTEM, so its executable must live in a folder
+that only administrators can change.
 
 ## Why not literally unkillable
 

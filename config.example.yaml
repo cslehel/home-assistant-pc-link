@@ -1,15 +1,16 @@
 # ======================================================================
 # Home Assistant PC Link - configuration
 # ----------------------------------------------------------------------
-# Copy to  C:\ProgramData\PCLink\config.yaml  (or run: python -m pclink init-config)
-# Validate with:  python -m pclink check-config
+# Copy to  C:\ProgramData\PCLink\config.yaml  (or run: pclink.exe init-config)
+# Validate with:  pclink.exe check-config
+# (From a Python install use "python -m pclink" in place of "pclink.exe".)
 # The service watches this file and applies most changes without a restart
 # (mqtt / storage / logging / ports need one - the log tells you).
 # ======================================================================
 
 # Home Assistant can be reached two ways (docs/HOMEASSISTANT.md):
 #  - the PC Link integration (recommended, no broker): enable `api` below
-#    (`python -m pclink api-token` prints a ready-made block), or
+#    (`pclink.exe api-token` prints a ready-made block), or
 #  - MQTT discovery: point `mqtt` at your broker.
 mqtt:
   enabled: true                  # false: no broker at all (integration only)
@@ -67,7 +68,7 @@ time_limits:
   # limit, pause a limit, unblock, end focus mode, extend bedtime, screenshots)
   # after the PIN was entered in the "Parent PIN" text entity (valid for
   # pin_timeout_seconds) or passed as "pin" in a JSON command. Tightening never
-  # needs it. Use parent_pin_sha256 (python -m pclink pin-hash 1234) to avoid a
+  # needs it. Use parent_pin_sha256 (pclink.exe pin-hash 1234) to avoid a
   # plain-text PIN in this file.
   # parent_pin: "1234"
   # pin_timeout_seconds: 300

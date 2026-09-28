@@ -150,26 +150,41 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design and
 
 ## Install (Windows)
 
+**Standalone version (recommended): no Python needed.**
+
+1. Download `PCLink-<version>-windows-x64.zip` from the
+   [Releases](https://github.com/cslehel/home-assistant-pc-link/releases) page.
+   Before extracting, right-click the zip, choose **Properties**, tick
+   **Unblock** and click OK.
+2. Extract it and double-click **install.cmd**, then allow the administrator
+   prompt. The first run creates `C:\ProgramData\PCLink\config.yaml` and opens
+   it in Notepad.
+3. Enter your Home Assistant connection and your users, save, and double-click
+   **install.cmd** again. The program is copied to `C:\Program Files\PCLink`,
+   the service is installed with tamper resistance (see
+   [docs/SECURITY.md](docs/SECURITY.md)) and started.
+
+Upgrade by running the new version's **install.cmd**; settings and statistics
+are kept. Uninstall with **uninstall.cmd**, which gives every managed user their
+logon rights back. Commands such as
+`"C:\Program Files\PCLink\pclink.exe" check-config` are listed by
+`pclink.exe help`.
+
+**Python install (alternative, for development):**
+
 ```powershell
-# 1. Install Python 3.11+ for all users, then:
 pip install -r requirements-windows.txt
-
-# 2. Create and edit the config
 python -m pclink init-config
-notepad %ProgramData%\PCLink\config.yaml     # set MQTT host + your users
+notepad %ProgramData%\PCLink\config.yaml     # set the HA connection + your users
 python -m pclink check-config
-
-# 3. Try it in the foreground first (Ctrl+C to stop)
-python -m pclink run
-
-# 4. Install as a service (auto-starts at boot; run from an elevated prompt).
-#    Tamper resistance is applied automatically (see docs/SECURITY.md).
-python -m pclink install
+python -m pclink run                          # try it in the foreground (Ctrl+C to stop)
+python -m pclink install                      # elevated prompt: install + tamper resistance
 python -m pclink start
 ```
 
-Manage it with `python -m pclink start|stop|restart|remove`. To uninstall,
-`python -m pclink remove` (it restores the default service permissions first).
+Both variants use the same configuration and data in `C:\ProgramData\PCLink`,
+and the standalone installer can take over an existing Python-based service.
+See [docs/INSTALL.md](docs/INSTALL.md) for details.
 
 ## Connect it to Home Assistant
 

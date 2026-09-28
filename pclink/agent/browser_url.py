@@ -43,6 +43,12 @@ class BrowserUrlReader:
 
     def _init_uia(self):
         import comtypes.client  # type: ignore
+
+        # Generate the UI Automation wrapper on first use (comtypes caches it; in the
+        # standalone build the cache lives in the user's AppData).  Importing
+        # comtypes.gen.UIAutomationClient directly only works if something else
+        # happened to generate it before.
+        comtypes.client.GetModule("UIAutomationCore.dll")
         from comtypes.gen import UIAutomationClient as UIA  # type: ignore
 
         self._comtypes = __import__("comtypes")

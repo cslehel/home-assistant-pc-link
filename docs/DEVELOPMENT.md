@@ -58,6 +58,29 @@ python scripts/gen_ha_strings.py .
 python scripts/sync_example_config.py
 ```
 
+## Building the standalone Windows version
+
+GitHub Actions builds it on every push (`.github/workflows/build.yml`) and
+tests the resulting zip on a real Windows machine: it runs `selftest` to prove
+every bundled backend loads, installs the service with `install.ps1`, checks it
+is running with the hardened permissions, then uninstalls it. The zip is
+attached to the workflow run as an artifact.
+
+To build locally on Windows:
+
+```powershell
+pip install -r packaging/requirements-build.txt
+python packaging/make_icon.py
+pyinstaller --noconfirm --clean packaging/pclink.spec
+dist\pclink\pclink.exe selftest
+```
+
+`packaging/entry_pclink.py` and `packaging/entry_agent.py` are the entry
+scripts; PyInstaller runs entry scripts as top-level code, so they must use
+absolute imports. In the build, `pclink.runtime.is_frozen()` is true: the
+service registers `pclink.exe service` as its binary and starts agents as
+`pclink-agent.exe`.
+
 ## Releasing
 
 Bump the version in `pclink/__init__.py`, `pyproject.toml` and

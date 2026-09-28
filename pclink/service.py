@@ -1,8 +1,13 @@
 """pywin32 Windows service wrapper.
 
-Install / control with ``python -m pclink install|start|stop|remove``.
-The service runs as LocalSystem so it can query user tokens (to start the
-per-session agents), log sessions off and change account logon hours.
+Install / control with ``pclink.exe install|start|stop|remove`` (standalone
+build) or ``python -m pclink ...`` (Python install).  The service runs as
+LocalSystem so it can query user tokens (to start the per-session agents), log
+sessions off and change account logon hours.
+
+Standalone build: the service manager runs ``pclink.exe service``, which hosts
+the service in-process through ``servicemanager``.  Python install: pywin32's
+``pythonservice.exe`` hosts the class as usual.
 """
 from __future__ import annotations
 
@@ -14,6 +19,7 @@ import traceback
 
 from .config import Config, default_config_path
 from .logsetup import setup_logging
+from .runtime import cli_name, service_binary
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +87,24 @@ if sys.platform == "win32":
             self.orchestrator = build_orchestrator(cfg)
             self.orchestrator.run()
 
+    # Standalone build: register "<path>\\pclink.exe service" as the service binary.
+    _exe_name, _exe_args = service_binary()
+    if _exe_name:
+        PCLinkService._exe_name_ = _exe_name
+        PCLinkService._exe_args_ = _exe_args
+
+    def run_service_host() -> int:
+        """Entry point when the service manager starts the standalone build."""
+        try:
+            servicemanager.Initialize()
+            servicemanager.PrepareToHostSingle(PCLinkService)
+            servicemanager.StartServiceCtrlDispatcher()
+        except Exception as exc:  # noqa: BLE001 - e.g. error 1063 when started from a console
+            print(f"'{cli_name()} service' is started by Windows' service manager, not by hand ({exc}).\n"
+                  f"Use '{cli_name()} start' to start the installed service, or '{cli_name()} run' to run in this console.")
+            return 1
+        return 0
+
     def handle_command_line(argv: list[str]) -> None:
         from . import hardening
 
@@ -120,7 +144,7 @@ if sys.platform == "win32":
                         blocker.unblock(policy.name)
                 print("restored logon rights for managed users")
             except Exception as exc:  # noqa: BLE001
-                print(f"note: could not restore logon rights automatically ({exc}); run 'python -m pclink unblock-all'")
+                print(f"note: could not restore logon rights automatically ({exc}); run '{cli_name()} unblock-all'")
             try:
                 hardening.soften_acl(name)
             except Exception:  # noqa: BLE001
@@ -136,7 +160,7 @@ if sys.platform == "win32":
                     hardening.harden_acl(name)
                     print("Tamper resistance enabled: the service auto-restarts and only")
                     print("administrators can stop it. Keep monitored users as STANDARD accounts.")
-                    print("Run 'python -m pclink unharden' before uninstalling, or use 'remove'")
+                    print(f"Run '{cli_name()} unharden' before uninstalling, or use 'remove'")
                     print("which restores the default ACL automatically.")
             except Exception:  # noqa: BLE001
                 log.exception("post-install hardening failed")
@@ -145,3 +169,6 @@ else:  # pragma: no cover - non-Windows import guard
 
     def handle_command_line(argv: list[str]) -> None:  # type: ignore[misc]
         raise SystemExit("Windows service commands are only available on Windows")
+
+    def run_service_host() -> int:  # type: ignore[misc]
+        raise SystemExit("the Windows service host is only available on Windows")
