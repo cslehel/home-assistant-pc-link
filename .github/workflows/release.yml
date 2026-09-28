@@ -1,0 +1,53 @@
+name: Release
+
+# Push a version tag (e.g. v0.3.0) to publish a GitHub release: the standalone
+# Windows zip is built and tested by build.yml, the tag is checked against
+# every version number in the project, and the release notes come from
+# CHANGELOG.md.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    secrets: inherit
+
+  release:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches every version number
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          built="${{ needs.build.outputs.version }}"
+          manifest=$(python3 -c "import json; print(json.load(open('custom_components/pclink/manifest.json'))['version'])")
+          pyproject=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          echo "tag=$tag package=$built manifest=$manifest pyproject=$pyproject"
+          if [ "$tag" != "$built" ] || [ "$tag" != "$manifest" ] || [ "$tag" != "$pyproject" ]; then
+            echo "::error::The tag does not match the version in pclink/__init__.py, manifest.json and pyproject.toml"
+            exit 1
+          fi
+
+      - name: Release notes
+        run: python3 scripts/release_notes.py "$GITHUB_REF_NAME" > notes.md
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "${{ needs.build.outputs.artifact }}.zip" \
+            --title "PC Link $GITHUB_REF_NAME" --notes-file notes.md --verify-tag
