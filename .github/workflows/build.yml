@@ -128,7 +128,8 @@ jobs:
 
           # A throw-away local account with a zero-minute limit: the service must block its logins.
           $user = "pclinktest"
-          $password = "Pc!" + [guid]::NewGuid().ToString("N") + "Aa1"
+          # 14 characters at most: for longer passwords net.exe asks a Y/N question nobody can answer here.
+          $password = "Pc!" + [guid]::NewGuid().ToString("N").Substring(0, 8) + "Aa1"
           net.exe user $user $password /add | Out-Null
           if ($LASTEXITCODE) { throw "could not create the test account" }
           function Get-LogonHours {
