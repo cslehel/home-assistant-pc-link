@@ -135,6 +135,14 @@ reports activity over `127.0.0.1` (authenticated with a per-launch token) and
 shows the tray icon. The agent has no enforcement power: killing it just makes
 the service relaunch it, and time keeps counting either way.
 
+**Home Assistant is a remote control, not a dependency.** Time counting,
+warnings, log-off and login blocking all run locally in the service and are
+persisted on the PC. If the network, the broker or Home Assistant goes down,
+limits keep being enforced, entities show as *unavailable* instead of stale,
+and everything resyncs automatically on reconnect. Commands and events from
+during the outage are deliberately not replayed. Details in
+[docs/HOMEASSISTANT.md](docs/HOMEASSISTANT.md#what-happens-when-the-connection-to-home-assistant-drops).
+
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design and
 [docs/MULTISEAT.md](docs/MULTISEAT.md) for ASTER specifics.
 

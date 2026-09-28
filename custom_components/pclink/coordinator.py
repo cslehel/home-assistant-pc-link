@@ -24,7 +24,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import PclinkApiError, PclinkAuthError, PclinkClient, PclinkOutdatedError
-from .const import CATALOG_REFRESH_MIN_SECONDS, DOMAIN, EVENT_TYPE, FALLBACK_POLL_SECONDS, MANUFACTURER
+from .const import CATALOG_REFRESH_MIN_SECONDS, DOMAIN, EVENT_TYPE, FALLBACK_POLL_SECONDS, MANUFACTURER, STALE_PUSH_SECONDS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +51,7 @@ class PclinkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._stop = asyncio.Event()
         self._backoff = 1
         self._last_catalog_refresh = 0.0
+        self._last_push = 0.0
         self._catalog_task: Optional[asyncio.Task] = None
 
     # -- identity -------------------------------------------------------------------------
@@ -116,6 +117,13 @@ class PclinkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     # -- REST fallback --------------------------------------------------------------------
     async def _async_update_data(self) -> dict[str, Any]:
+        if self.ws_connected and time.monotonic() - self._last_push > STALE_PUSH_SECONDS:
+            # The socket looks open but the PC stopped pushing: treat it as gone,
+            # close it so the WebSocket loop reconnects, and poll for the truth.
+            _LOGGER.warning("No state from %s for %ds; reconnecting", self.pc_name, STALE_PUSH_SECONDS)
+            self.ws_connected = False
+            if self._ws is not None and not self._ws.closed:
+                await self._ws.close()
         if self.ws_connected:  # pushed data is authoritative while the socket is up
             return {"pc": self.pc, "users": self.users}
         try:
@@ -180,6 +188,8 @@ class PclinkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     @callback
     def _handle_message(self, data: dict[str, Any]) -> None:
         kind = data.get("type")
+        if kind in ("hello", "state", "status"):
+            self._last_push = time.monotonic()
         if kind == "hello":
             self._backoff = 1
             if isinstance(data.get("status"), dict):

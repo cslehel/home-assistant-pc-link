@@ -149,6 +149,7 @@ class Orchestrator:
         self._pin_notice: Optional[dict[str, Any]] = None
         self._last_api_push = 0.0
         self._started_event_sent = False
+        self._resync_requested = False
         for policy in cfg.time_limits.users:
             self._slug_to_user[policy.slug] = policy.key
             self._users[policy.key] = _UserView(user=policy.key)
@@ -288,6 +289,18 @@ class Orchestrator:
             self._wake.set()
 
     def on_mqtt_connected(self) -> None:
+        """Called on paho's network thread (connect, HA birth message).
+
+        Only flags a resync and wakes the loop: the actual cache reset happens
+        in ``_tick`` under the orchestrator lock, so it never races with a
+        publish that is in progress on the main thread.
+        """
+        self._resync_requested = True
+        self._wake.set()
+
+    def _perform_resync(self) -> None:
+        """Forget what Home Assistant has seen so the next tick republishes everything."""
+        self._resync_requested = False
         self._discovered.clear()
         self._pc_discovery_signature = None
         self._fleet_signature = None
@@ -295,7 +308,7 @@ class Orchestrator:
             view.discovered = False
             view.last_payload = None
         self._last_pc_publish = 0.0
-        self._wake.set()
+        self._last_api_push = 0.0
 
     def _on_pin_event(self, kind: str) -> None:
         self._emit_pc_event(kind)
@@ -311,6 +324,8 @@ class Orchestrator:
         now = self.clock()
         now_ts = time.time()
         self._stats["ticks"] += 1
+        if self._resync_requested:
+            self._perform_resync()
         self._check_config_reload(now_ts)
         self._drain_commands()
         sessions = self._collect_sessions(now_ts)
@@ -1447,7 +1462,7 @@ class Orchestrator:
         elif action == "reload":
             result = self.reload_config()
         elif action == "refresh":
-            self.on_mqtt_connected()
+            self._perform_resync()
         elif action == "set":
             # entity command from the native integration: {"action":"set","entity":"user_kevin_blocked","value":"ON"}
             entity = str(data.get("entity", "") or "")
@@ -1688,7 +1703,7 @@ class Orchestrator:
                     self.agent_server.broadcast({"type": "exit"})  # relaunched with the new settings
             self._restart_needed = sorted(set(self._restart_needed) | set(restart))
             self._config_mtime = self._stat_config()
-            self.on_mqtt_connected()  # republish discovery with the new entity set
+            self._perform_resync()  # republish discovery with the new entity set
         log.info("configuration reloaded%s", f" (restart needed for: {', '.join(restart)})" if restart else "")
         self.store.log_event(None, "config_reloaded", ", ".join(restart))
         self._emit_pc_event("config_reloaded", restart_needed=restart or None)

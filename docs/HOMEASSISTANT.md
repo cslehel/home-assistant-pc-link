@@ -402,3 +402,40 @@ data:
   topic: pclink/family_pc/cmd
   payload: '{"action": "wol", "mac": "AA:BB:CC:DD:EE:FF"}'
 ```
+
+## What happens when the connection to Home Assistant drops
+
+**Time limits keep working.** Every decision (counting time, warnings, log
+off / lock, login blocking, allowed hours, bonus minutes you granted earlier)
+is made locally by the service and stored in its own SQLite database. Home
+Assistant is a remote control and a display, never a dependency. A child gets
+neither extra time nor a lock-out because the network, the broker or Home
+Assistant is down. The per-user tray icons keep working too (they talk to the
+service over localhost).
+
+**Home Assistant shows the PC as unavailable** rather than showing stale
+values:
+
+- *PC Link integration (local API):* state is pushed over a WebSocket every
+  few seconds. If the socket drops, or the PC stops pushing for 90 s, the
+  integration switches to polling and marks the entities unavailable until it
+  can reach the PC again; it then reconnects with a backoff of 1 s to 60 s.
+- *MQTT:* the broker publishes the retained *last will* (`offline`) as soon
+  as the service's connection is lost, so all entities become unavailable.
+  The service reconnects with a 2 s to 60 s backoff.
+
+**On reconnect everything resyncs by itself.** The service republishes its
+discovery payloads and the full current state, so entities come back with the
+truth (used minutes, remaining minutes, blocked / paused switches). This also
+happens when Home Assistant itself restarts (it announces itself on
+`homeassistant/status`). Statistics collected during the outage are in the
+database and appear in the history attributes.
+
+**Commands sent while the PC was unreachable are not replayed.** A button
+pressed or a number changed during the outage is lost, deliberately: a
+"shut down" or "log off" from three hours ago must never fire when the link
+returns. The same goes for events: `time_up`, `logged_off` and similar device
+triggers that happened during the outage are not delivered late, so
+automations never react to stale moments. Check the entity state after the
+PC is back and repeat the command if you still want it. Limits set through
+the config file or applied before the outage are unaffected.

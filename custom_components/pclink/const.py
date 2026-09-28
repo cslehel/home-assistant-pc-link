@@ -24,6 +24,9 @@ EVENT_TYPE = "pclink_event"
 
 # How often the REST fallback polls while the WebSocket is down (seconds).
 FALLBACK_POLL_SECONDS = 60
+# A WebSocket that has not delivered a state push for this long is treated as dead
+# (the PC pushes every ~5 s; aiohttp heartbeats catch dead TCP, this catches a stuck PC).
+STALE_PUSH_SECONDS = 90
 # Minimum spacing between entity-catalog refreshes triggered by state changes.
 CATALOG_REFRESH_MIN_SECONDS = 20
 

@@ -19,6 +19,9 @@ except ImportError:  # pragma: no cover - dependency missing
 
 CommandHandler = Callable[[str, Any], None]
 
+# Max QoS>0 messages paho may hold in memory while disconnected.
+OFFLINE_QUEUE_LIMIT = 100
+
 
 class MqttBridge:
     """Thin wrapper around paho: topics, LWT, discovery, command dispatch.
@@ -80,6 +83,11 @@ class MqttBridge:
                 client.tls_insecure_set(True)
         client.will_set(self.availability_topic, "offline", qos=1, retain=True)
         client.reconnect_delay_set(min_delay=2, max_delay=60)
+        # While the broker is unreachable paho queues QoS>0 publishes in memory.
+        # Bound that queue so a days-long outage cannot grow it without limit;
+        # everything that matters is republished on reconnect anyway.
+        client.max_queued_messages_set(OFFLINE_QUEUE_LIMIT)
+        client.max_inflight_messages_set(20)
         client.on_connect = self._handle_connect
         client.on_disconnect = self._handle_disconnect
         client.on_message = self._handle_message
@@ -183,9 +191,20 @@ class MqttBridge:
         else:
             self.publish(topic, payload, retain=True, qos=1)
 
-    def publish_event(self, path: str, event: str) -> None:
-        """Device-trigger events: ``<base>/event/<path>`` with the event name as payload."""
+    def publish_event(self, path: str, event: str) -> bool:
+        """Device-trigger events: ``<base>/event/<path>`` with the event name as payload.
+
+        Events are moments, not state: while the broker is unreachable they are
+        dropped (returns False) instead of being queued, so that a reconnect
+        after a long outage does not replay hours-old "time is up" / "logged
+        off" triggers into Home Assistant automations.  State topics are
+        retained and republished on reconnect, so nothing durable is lost.
+        """
+        if not self.connected:
+            log.debug("MQTT offline; dropping event %s/%s", path, event)
+            return False
         self.publish(f"{self.event_topic}/{path}", event, retain=False, qos=1)
+        return True
 
     def publish_availability(self, online: bool = True) -> None:
         self.publish(self.availability_topic, "online" if online else "offline", retain=True, qos=1)

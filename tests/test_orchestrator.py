@@ -797,3 +797,45 @@ def test_mqtt_discovery_can_be_turned_off():
     assert mqtt.discovery == {}                       # no HA discovery payloads
     assert mqtt.state_topic in mqtt.published         # state still flows for other PCs (fleet)
     assert mqtt.user_state_topic("kevin") in mqtt.published
+
+
+def test_mqtt_reconnect_defers_resync_to_the_loop():
+    """on_mqtt_connected runs on paho's thread: it must only flag a resync; the
+    republish happens inside tick() under the orchestrator lock."""
+    import threading
+
+    now = datetime(2026, 9, 28, 12, 0, 0)
+    res = build(now)
+    orch, sessions = res[0], res[1]
+    mqtt = orch.mqtt
+    sessions.sessions = [session()]
+    orch.tick()
+    assert "sensor/cpu_percent" in mqtt.discovery
+    mqtt.discovery.clear()
+
+    t = threading.Thread(target=orch.on_mqtt_connected)
+    t.start()
+    t.join()
+    assert orch._resync_requested is True
+    assert "sensor/cpu_percent" not in mqtt.discovery  # nothing touched off-loop
+
+    orch.tick()
+    assert orch._resync_requested is False
+    assert "sensor/cpu_percent" in mqtt.discovery  # republished on the loop
+    user_topic = mqtt.user_state_topic("kevin")
+    assert user_topic in mqtt.published
+
+
+def test_enforcement_continues_without_mqtt():
+    """Time accounting and enforcement never depend on Home Assistant being reachable."""
+    now = datetime(2026, 9, 28, 12, 0, 0)
+    res = build(now)
+    orch, sessions, blocker = res[0], res[1], res[2]
+    orch.mqtt.connected = False
+    orch.store.add_usage("kevin", now.date(), active=61 * 60)
+    sessions.sessions = [session()]
+    orch.tick()
+    assert blocker.state.get("kevin") is True  # login block applied while "offline"
+    orch._holder["now"] = now.replace(minute=2)
+    orch.tick()
+    assert 2 in sessions.logged_off  # logoff enforced while "offline"
