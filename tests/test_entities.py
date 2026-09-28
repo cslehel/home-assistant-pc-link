@@ -109,3 +109,79 @@ def test_new_user_entities_follow_policy():
     fleet = f.fleet_entities({"kevin": {"name": "Kevin"}}, "pclink/fleet/state", lambda slug: f"pclink/fleet/user/{slug}/state")
     assert all(e.payload["device"]["identifiers"] == ["pclink_fleet"] for e in fleet)
     assert {e.object_id for e in fleet} >= {"fleet_pcs_online", "fleet_user_kevin_total_today", "fleet_any_pc_in_use"}
+
+
+# -- catalog for the native integration (GET /api/entities) ----------------------------------------
+
+CATALOG_PLATFORMS = {"sensor", "binary_sensor", "switch", "number", "button", "text", "camera"}
+
+
+def test_pc_catalog_entries_are_transport_neutral():
+    cfg, f = make_factory()
+    ents = f.pc_entities({"disks": ["c"], "gpu_name": "RTX", "battery_percent": 90})
+    entries = [e.catalog_entry() for e in ents]
+    entries = [e for e in entries if e]
+    keys = {e["key"] for e in entries}
+    assert {"cpu_percent", "shutdown", "time_limits_enabled", "broadcast_message", "parent_present"} <= keys
+    assert "online" not in keys  # availability-based power sensor is MQTT-only
+    for e in entries:
+        assert e["source"] == "pc" and e["platform"] in CATALOG_PLATFORMS
+        assert e["unique_id"].startswith("pclink_testpc_")
+        assert "topic" not in json.dumps(e) and "template" not in json.dumps(e)
+    cpu = next(e for e in entries if e["key"] == "cpu_percent")
+    assert cpu == {"unique_id": "pclink_testpc_cpu_percent", "key": "cpu_percent", "platform": "sensor",
+                   "name": "CPU usage", "value": "cpu_percent", "unit": "%", "state_class": "measurement",
+                   "icon": "mdi:cpu-64-bit", "enabled": True, "precision": 0, "source": "pc"}
+    off = next(e for e in entries if e["key"] == "cpu_frequency")
+    assert off["enabled"] is False and off["device_class"] == "frequency"
+    switch = next(e for e in entries if e["key"] == "time_limits_enabled")
+    assert switch["platform"] == "switch" and switch["command"] == "time_limits_enabled" and switch["category"] == "config"
+    button = next(e for e in entries if e["key"] == "reboot")
+    assert button["platform"] == "button" and button["device_class"] == "restart" and "value" not in button
+
+
+def test_user_catalog_entries_carry_user_and_commands():
+    cfg, f = make_factory()
+    entries = [e.catalog_entry() for e in f.user_entities("kevin", cfg.user_policy("kevin"), managed=True)]
+    entries = [e for e in entries if e]
+    for e in entries:
+        assert e["source"] == "user" and e["user"] == "kevin" and e["user_name"] == "kevin" and e["managed"] is True
+    blocked = next(e for e in entries if e["key"] == "user_kevin_blocked")
+    assert blocked["platform"] == "switch" and blocked["value"] == "blocked" and blocked["command"] == "user_kevin_blocked"
+    limit = next(e for e in entries if e["key"] == "user_kevin_limit_today")
+    assert limit["platform"] == "number" and limit["value"] == "limit_today"
+    assert (limit["min"], limit["max"], limit["step"], limit["unit"], limit["mode"]) == (0, 1440, 5, "min", "box")
+    remaining = next(e for e in entries if e["key"] == "user_kevin_time_remaining")
+    assert remaining["attributes"] == "limit_details" and remaining["device_class"] == "duration"
+    status = next(e for e in entries if e["key"] == "user_kevin_status")
+    assert status["device_class"] == "enum" and "active" in status["options"]
+    message = next(e for e in entries if e["key"] == "user_kevin_message")
+    assert message["platform"] == "text" and "value" not in message and "password" not in message
+
+
+def test_password_text_and_camera_specs():
+    import yaml
+    cfg = Config.from_dict(yaml.safe_load("""
+        device: {name: TestPC}
+        screenshots: {enabled: true}
+        time_limits:
+          parent_pin: "1234"
+          users: [{name: kevin, daily_limit_minutes: 60}]
+    """))
+    f = EntityFactory(cfg, base_topic="pclink/testpc", availability_topic="a", state_topic="s")
+    pc = {e["key"]: e for e in (x.catalog_entry() for x in f.pc_entities({})) if e}
+    assert pc["parent_pin"]["platform"] == "text" and pc["parent_pin"]["password"] is True
+    assert pc["parent_pin"]["value"] == "parent_pin_state"
+    user = {e["key"]: e for e in (x.catalog_entry() for x in f.user_entities("kevin", cfg.user_policy("kevin"), True)) if e}
+    cam = user["user_kevin_screenshot_image"]
+    assert cam["platform"] == "camera" and cam["value"] == "screenshot" and cam["user"] == "kevin"
+
+
+def test_mqtt_only_items_have_no_catalog_entry():
+    cfg, f = make_factory()
+    assert all(e.catalog_entry() is None for e in f.user_trigger_entities("kevin", cfg.user_policy("kevin")))
+    assert all(e.catalog_entry() is None for e in f.pc_trigger_entities())
+    fleet = f.fleet_entities({"kevin": {"name": "Kevin"}}, "pclink/fleet/state", lambda slug: f"pclink/fleet/user/{slug}")
+    assert fleet and all(e.catalog_entry() is None for e in fleet)
+    online = next(e for e in f.pc_entities({}) if e.object_id == "online")
+    assert online.catalog_entry() is None

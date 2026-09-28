@@ -122,6 +122,8 @@ def default_config_path() -> str:
 
 @dataclass
 class MqttConfig:
+    enabled: bool = True              # false: no broker at all (use the local API + native integration)
+    discovery: bool = True            # false: keep the broker (fleet / other PCs) but let the native integration create the entities
     host: str = "homeassistant.local"
     port: int = 1883
     username: Optional[str] = None
@@ -475,6 +477,7 @@ class ApiConfig:
     token: Optional[str] = None       # required for writes; required for everything when not on loopback
     allow_config_edit: bool = True    # the setup page may write config.yaml (needs a token)
     push_interval_seconds: float = 5.0
+    advertise: bool = True            # announce the API on the LAN via mDNS so Home Assistant discovers the PC
 
 
 @dataclass

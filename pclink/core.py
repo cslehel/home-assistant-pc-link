@@ -29,7 +29,7 @@ import yaml
 from . import __version__
 from .activity import ActivityClassifier
 from .config import AppLauncher, Config, ConfigError, CustomCommand, UserPolicy
-from .entities import Entity, EntityFactory
+from .entities import PC_TRIGGERS, USER_TRIGGERS, Entity, EntityFactory
 from .fleet import FleetTracker
 from .models import Activity, AgentReport, SessionInfo
 from .pin import ParentPin
@@ -76,6 +76,7 @@ class _UserView:
     out_of_time: Optional[bool] = None
     exceeded_rules: set = field(default_factory=set)
     screenshot: Optional[dict[str, Any]] = None
+    screenshot_data: Optional[bytes] = None     # last image, served by GET /api/users/<user>/screenshot
     last_refusal: Optional[dict[str, Any]] = None
     best_session: Optional[int] = None
 
@@ -104,13 +105,18 @@ class Orchestrator:
         self.devices = devices
         self.api = api
         self.clock = clock or datetime.now
-        self.entities: Optional[EntityFactory] = None
         if mqtt is not None:
             self.entities = EntityFactory(
                 cfg, base_topic=mqtt.base, availability_topic=mqtt.availability_topic,
                 state_topic=mqtt.state_topic, discovery_prefix=mqtt.discovery_prefix,
             )
-        self.fleet = FleetTracker(cfg.fleet, cfg.mqtt.base_topic, cfg.device.id) if cfg.fleet.enabled else None
+        else:  # no broker: the factory still describes the entities for the local API
+            base = f"{cfg.mqtt.base_topic}/{cfg.device.id}"
+            self.entities = EntityFactory(cfg, base_topic=base, availability_topic=f"{base}/availability",
+                                          state_topic=f"{base}/state", discovery_prefix=cfg.mqtt.discovery_prefix)
+        self.fleet = FleetTracker(cfg.fleet, cfg.mqtt.base_topic, cfg.device.id) \
+            if cfg.fleet.enabled and (mqtt is not None or cfg.mqtt.enabled) else None
+        self.mdns = None  # optional mDNS advertiser for the local API (set by build_orchestrator)
         if self.fleet is not None:
             self.timekeeper.external_usage = self.fleet.external_usage
         # runtime state -----------------------------------------------------
@@ -198,6 +204,11 @@ class Orchestrator:
             except Exception:  # noqa: BLE001
                 log.exception("local API failed to start")
                 self.api = None
+        if self.api is not None and self.mdns is not None:
+            try:
+                self.mdns.start()
+            except Exception:  # noqa: BLE001
+                log.warning("mDNS advertising failed to start", exc_info=True)
         if self.mqtt is not None:
             self.mqtt.start()
 
@@ -221,7 +232,7 @@ class Orchestrator:
                     self.blocker.unblock(user)
                 except Exception:  # noqa: BLE001
                     log.exception("unblock on stop failed for %s", user)
-        for comp in (self.hwsensors, self.winupdate, self.api):
+        for comp in (self.hwsensors, self.winupdate, self.mdns, self.api):
             if comp is not None:
                 try:
                     comp.stop()
@@ -323,7 +334,7 @@ class Orchestrator:
         self._transitions(now, by_user)
         self._reassert_blocks(now, now_ts)
         self._push_agent_status(now, by_user)
-        if not self._started_event_sent and self.mqtt is not None:
+        if not self._started_event_sent and (self.mqtt is not None or self.api is not None):
             self._started_event_sent = True
             self._emit_pc_event("started")
         if self.mqtt is not None:
@@ -717,6 +728,8 @@ class Orchestrator:
     # ------------------------------------------------------------------
     def _publish_entities(self, entities: list[Entity], node_id: Optional[str] = None) -> None:
         assert self.mqtt is not None
+        if not self.cfg.mqtt.discovery:
+            return  # entities come from the native integration; only state/fleet topics are published
         for ent in entities:
             key = f"{node_id or ''}{ent.component}/{ent.object_id}"
             if key in self._discovered:
@@ -1042,10 +1055,15 @@ class Orchestrator:
             return None
         return self._refuse(user, action, reason)
 
-    def dispatch(self, object_id: str, payload: Any) -> dict[str, Any]:
+    def dispatch(self, object_id: str, payload: Any, pin: Any = None) -> dict[str, Any]:
+        """Run an entity command: ``object_id`` is the entity key (``user_kevin_blocked``),
+        ``payload`` the value HA would publish for it (``ON`` / ``OFF`` / ``PRESS`` / a number / text)."""
         if object_id == "cmd":
             return self._dispatch_json(payload if isinstance(payload, dict) else {})
-        text = payload.strip() if isinstance(payload, str) else str(payload)
+        if isinstance(payload, bool):
+            text = "ON" if payload else "OFF"
+        else:
+            text = payload.strip() if isinstance(payload, str) else str(payload)
         log.info("HA command %s = %r", object_id, "***" if object_id == "parent_pin" else text[:100])
         now = self.clock()
         if object_id in ("shutdown", "reboot", "sleep", "hibernate", "cancel_shutdown"):
@@ -1056,8 +1074,8 @@ class Orchestrator:
                     self._lock_session(s.session_id)
         elif object_id == "time_limits_enabled":
             on = text.upper() == "ON"
-            if not on and self._gate("disable", "time_limits_off"):
-                return {"ok": False}
+            if not on and (ref := self._gate("disable", "time_limits_off", None, pin)):
+                return ref
             self.timekeeper.set_global_enabled(on)
         elif object_id == "broadcast_message":
             if text:
@@ -1083,7 +1101,7 @@ class Orchestrator:
         elif object_id.startswith("cmd_"):
             self._run_custom(object_id[4:])
         elif object_id.startswith("user_"):
-            return self._dispatch_user(object_id[5:], text, now)
+            return self._dispatch_user(object_id[5:], text, now, pin=pin)
         else:
             log.warning("unknown command entity %s", object_id)
             return {"ok": False, "error": f"unknown command {object_id}"}
@@ -1117,33 +1135,33 @@ class Orchestrator:
         if sub == "limit_today":
             minutes = int(number())
             current = tk.effective_limit_minutes(user, today)
-            if (current is None or minutes > current) and self._gate("grant", "limit_today", user, pin):
-                return {"ok": False}
+            if (current is None or minutes > current) and (ref := self._gate("grant", "limit_today", user, pin)):
+                return ref
             tk.set_limit_today(user, today, minutes)
         elif sub == "weekday_limit":
-            if self._gate("grant", "weekday_limit", user, pin):
-                return {"ok": False}
+            if (ref := self._gate("grant", "weekday_limit", user, pin)):
+                return ref
             tk.set_weekday_limit(user, int(number()))
         elif sub == "weekend_limit":
-            if self._gate("grant", "weekend_limit", user, pin):
-                return {"ok": False}
+            if (ref := self._gate("grant", "weekend_limit", user, pin)):
+                return ref
             tk.set_weekend_limit(user, int(number()))
         elif sub == "weekly_limit":
-            if self._gate("grant", "weekly_limit", user, pin):
-                return {"ok": False}
+            if (ref := self._gate("grant", "weekly_limit", user, pin)):
+                return ref
             minutes = int(number())
             tk.set_weekly_limit(user, None if minutes <= 0 else minutes)
         elif sub == "bonus_today":
             minutes = number()
-            if minutes > tk.bonus_seconds(user, today) / 60 and self._gate("grant", "bonus_today", user, pin):
-                return {"ok": False}
+            if minutes > tk.bonus_seconds(user, today) / 60 and (ref := self._gate("grant", "bonus_today", user, pin)):
+                return ref
             tk.set_bonus_minutes(user, today, minutes)
         elif sub in ("add_15", "add_30", "add_minutes"):
             minutes = 15 if sub == "add_15" else 30 if sub == "add_30" else number()
             if minutes <= 0:
                 return {"ok": True}
-            if self._gate("grant", sub, user, pin):
-                return {"ok": False}
+            if (ref := self._gate("grant", sub, user, pin)):
+                return ref
             tk.add_bonus_minutes(user, today, minutes)
         elif sub.startswith("reward_"):
             if policy is None:
@@ -1151,29 +1169,29 @@ class Orchestrator:
             reward = next((r for r in policy.rewards if r.slug == sub[7:]), None)
             if reward is None:
                 return {"ok": False, "error": f"unknown reward {sub[7:]}"}
-            if self._gate("grant", "reward", user, pin):
-                return {"ok": False}
+            if (ref := self._gate("grant", "reward", user, pin)):
+                return ref
             ok, why = tk.claim_reward(user, reward, today)
             if ok:
                 self.notify_sessions(active, "Bonus time", f"{reward.name}: +{reward.minutes} minutes!", "info")
                 self._emit_user_event(user, "reward_claimed", reward=reward.name, minutes=reward.minutes)
             result = {"ok": ok, "error": why or None}
         elif sub == "limit_enabled":
-            if not on and self._gate("disable", "limit_enabled_off", user, pin):
-                return {"ok": False}
+            if not on and (ref := self._gate("disable", "limit_enabled_off", user, pin)):
+                return ref
             tk.set_limit_enabled(user, on)
         elif sub == "blocked":
-            if not on and self._gate("unblock", "unblock", user, pin):
-                return {"ok": False}
+            if not on and (ref := self._gate("unblock", "unblock", user, pin)):
+                return ref
             tk.set_manually_blocked(user, on)
         elif sub == "bedtime_extension":
             minutes = int(number())
-            if minutes > tk.bedtime_extension_minutes(user, today) and self._gate("bedtime", "bedtime_extension", user, pin):
-                return {"ok": False}
+            if minutes > tk.bedtime_extension_minutes(user, today) and (ref := self._gate("bedtime", "bedtime_extension", user, pin)):
+                return ref
             tk.set_bedtime_extension(user, today, minutes)
         elif sub == "extend_bedtime_30":
-            if self._gate("bedtime", "extend_bedtime", user, pin):
-                return {"ok": False}
+            if (ref := self._gate("bedtime", "extend_bedtime", user, pin)):
+                return ref
             tk.extend_bedtime(user, today, 30)
         elif sub == "focus_mode":
             if on:
@@ -1181,8 +1199,8 @@ class Orchestrator:
                 tk.start_focus(user, now, minutes)
                 self.notify_sessions(active, "Focus mode", policy.focus.message if policy else "Focus mode is on.", "info")
             else:
-                if self._gate("focus_off", "focus_off", user, pin):
-                    return {"ok": False}
+                if (ref := self._gate("focus_off", "focus_off", user, pin)):
+                    return ref
                 tk.stop_focus(user, now)
         elif sub == "focus_minutes":
             self.store.set_setting(user, "focus_minutes", int(number()))
@@ -1215,15 +1233,15 @@ class Orchestrator:
         for rule in sorted(policy.rules, key=lambda r: len(r.slug), reverse=True):
             if rest == rule.slug + "_enabled":
                 on = text.upper() == "ON"
-                if not on and self._gate("disable", "rule_off", user, pin):
-                    return {"ok": False}
+                if not on and (ref := self._gate("disable", "rule_off", user, pin)):
+                    return ref
                 self.rules.set_rule_enabled(user, rule.slug, on)
                 break
             if rest == rule.slug + "_limit_today":
                 minutes = int(float(text))
                 current = self.rules.rule_limit_today(user, rule, today)
-                if (current is None or minutes > current) and self._gate("grant", "rule_limit", user, pin):
-                    return {"ok": False}
+                if (current is None or minutes > current) and (ref := self._gate("grant", "rule_limit", user, pin)):
+                    return ref
                 self.rules.set_rule_limit_today(user, rule.slug, today, None if minutes >= 1440 else minutes)
                 break
         else:
@@ -1430,6 +1448,12 @@ class Orchestrator:
             result = self.reload_config()
         elif action == "refresh":
             self.on_mqtt_connected()
+        elif action == "set":
+            # entity command from the native integration: {"action":"set","entity":"user_kevin_blocked","value":"ON"}
+            entity = str(data.get("entity", "") or "")
+            if not entity or entity == "cmd":
+                return {"ok": False, "error": "entity required"}
+            result = self.dispatch(entity, data.get("value", ""), pin=pin)
         else:
             log.warning("unknown JSON command: %s", data)
             return {"ok": False, "error": f"unknown action {action!r}"}
@@ -1572,6 +1596,7 @@ class Orchestrator:
                     "width": message.get("width"), "height": message.get("height"), "bytes": len(data)}
             view = self._ensure_user(user)
             view.screenshot = meta
+            view.screenshot_data = data
             view.last_payload = None
             if self.mqtt is not None and self.entities is not None:
                 self.mqtt.publish(self.entities.screenshot_topic(self._slug_for(user)), data, retain=self.cfg.screenshots.retain)
@@ -1673,9 +1698,41 @@ class Orchestrator:
     # local API backend
     # ------------------------------------------------------------------
     def api_health(self) -> dict[str, Any]:
-        return {"ok": True, "version": __version__, "device": self.cfg.device.id, "uptime_seconds": round(time.time() - self._started_at),
+        return {"ok": True, "version": __version__, "device": self.cfg.device.id, "name": self.cfg.device.name,
+                "uptime_seconds": round(time.time() - self._started_at),
                 "ticks": self._stats["ticks"], "mqtt_connected": bool(getattr(self.mqtt, "connected", False)),
                 "restart_needed": self._restart_needed}
+
+    def api_entities(self) -> dict[str, Any]:
+        """The entity catalog for the native Home Assistant integration.
+
+        The same definitions that drive MQTT discovery, minus MQTT specifics: each
+        entry says which platform to create, where in the ``pc`` / ``users[user]``
+        payload its value lives and which entity key to ``set`` for commands."""
+        with self._lock:
+            snap = self._last_pc_snapshot or self.pc_payload(self._last_sessions)
+            readings = self.hwsensors.latest() if self.hwsensors is not None else []
+            ents: list[Entity] = list(self.entities.pc_entities(snap)) + list(self.entities.hw_entities(readings))
+            logged_in = {s.user for s in self._last_sessions}
+            users: dict[str, dict[str, Any]] = {}
+            for user in sorted(self._users):
+                managed = self.timekeeper.is_managed(user)
+                if not managed and not self.cfg.activity.track_unmanaged_users and user not in logged_in:
+                    continue
+                policy = self.timekeeper.policy_for(user)
+                users[user] = {"name": policy.label if policy else user, "managed": managed}
+                ents += self.entities.user_entities(user, policy, managed)
+            entries = [e.catalog_entry() for e in ents]
+            return {"device": self.entities.device_block(), "version": __version__,
+                    "users": users, "entities": [e for e in entries if e],
+                    "triggers": {"user": dict(USER_TRIGGERS), "pc": dict(PC_TRIGGERS)}}
+
+    def api_screenshot(self, user: str) -> Optional[tuple[bytes, str]]:
+        """The last screenshot taken of ``user`` as (bytes, format) or None."""
+        view = self._users.get(user.lower())
+        if view is None or view.screenshot_data is None:
+            return None
+        return view.screenshot_data, str((view.screenshot or {}).get("format") or self.cfg.screenshots.format)
 
     def api_status(self) -> dict[str, Any]:
         with self._lock:
@@ -1703,6 +1760,7 @@ class Orchestrator:
     def api_command(self, data: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             result = self._dispatch_json(data)
+            self._last_api_push = 0.0  # push the new state to WebSocket clients on the next tick
         self._wake.set()
         return result
 
@@ -1826,11 +1884,14 @@ def build_orchestrator(cfg: Config) -> Orchestrator:
         if (cfg.telemetry.usb_devices or cfg.telemetry.printers) else None
     orch.winupdate = WindowsUpdate(cfg.windows_update, on_change=lambda d: orch._emit_pc_event(d.get("event", "updates_available"))) \
         if cfg.windows_update.enabled else None
-    fleet_topics = orch.fleet.topics() if orch.fleet is not None else []
-    orch.mqtt = MqttBridge(cfg.mqtt, cfg.device.id, on_command=orch.on_command, on_connected=orch.on_mqtt_connected,
-                           extra_topics=fleet_topics, on_peer=orch.on_peer_message if orch.fleet else None)
-    orch.entities = EntityFactory(cfg, base_topic=orch.mqtt.base, availability_topic=orch.mqtt.availability_topic,
-                                  state_topic=orch.mqtt.state_topic, discovery_prefix=orch.mqtt.discovery_prefix)
+    if cfg.mqtt.enabled:
+        fleet_topics = orch.fleet.topics() if orch.fleet is not None else []
+        orch.mqtt = MqttBridge(cfg.mqtt, cfg.device.id, on_command=orch.on_command, on_connected=orch.on_mqtt_connected,
+                               extra_topics=fleet_topics, on_peer=orch.on_peer_message if orch.fleet else None)
+        orch.entities = EntityFactory(cfg, base_topic=orch.mqtt.base, availability_topic=orch.mqtt.availability_topic,
+                                      state_topic=orch.mqtt.state_topic, discovery_prefix=orch.mqtt.discovery_prefix)
+    elif not cfg.api.enabled:
+        log.warning("mqtt.enabled is false and api.enabled is false: Home Assistant cannot reach this PC")
     if cfg.agent.enabled and launcher is not None:
         orch.agent_server = AgentServer(
             cfg.agent.ipc_host, cfg.agent.ipc_port, on_report=orch.on_agent_report,
@@ -1842,4 +1903,8 @@ def build_orchestrator(cfg: Config) -> Orchestrator:
         from .webui import SETUP_PAGE
 
         orch.api = ApiServer(cfg.api, orch, html=SETUP_PAGE)
+        if cfg.api.advertise:
+            from .discovery import MdnsAdvertiser
+
+            orch.mdns = MdnsAdvertiser(cfg.api, device_id=cfg.device.id, device_name=cfg.device.name)
     return orch

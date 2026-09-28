@@ -8,6 +8,8 @@ configured.  Endpoints (all JSON):
     GET  /api/status            PC payload (same as the MQTT state topic)
     GET  /api/users             every user's payload
     GET  /api/users/<user>      one user
+    GET  /api/users/<user>/screenshot   last screenshot image (token)
+    GET  /api/entities          entity catalog for the native HA integration
     GET  /api/events?n=50       recent events
     GET  /api/config            config.yaml text          (token)
     PUT  /api/config            validate + write + reload (token, api.allow_config_edit)
@@ -51,6 +53,8 @@ class ApiBackend:
     def api_users(self) -> dict[str, dict[str, Any]]: ...
     def api_user(self, user: str) -> Optional[dict[str, Any]]: ...
     def api_events(self, n: int, user: Optional[str]) -> list[dict[str, Any]]: ...
+    def api_entities(self) -> dict[str, Any]: ...
+    def api_screenshot(self, user: str) -> Optional[tuple[bytes, str]]: ...
     def api_command(self, data: dict[str, Any]) -> dict[str, Any]: ...
     def api_config_text(self) -> str: ...
     def api_config_write(self, text: str) -> dict[str, Any]: ...
@@ -236,6 +240,14 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _bytes(self, status: int, body: bytes, content_type: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _text(self, status: int, text: str, content_type: str = "text/plain; charset=utf-8") -> None:
         body = text.encode("utf-8")
         self.send_response(status)
@@ -296,10 +308,23 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(200, api.backend.api_status())
             elif path == "/api/users":
                 self._json(200, api.backend.api_users())
+            elif path.startswith("/api/users/") and path.endswith("/screenshot"):
+                if not self._authorized(write=True):  # images are sensitive: always need the token
+                    self._json(401, {"error": "token required"})
+                    return
+                user = path[len("/api/users/"):-len("/screenshot")]
+                shot = api.backend.api_screenshot(user)
+                if shot is None:
+                    self._json(404, {"error": "no screenshot"})
+                else:
+                    data, fmt = shot
+                    self._bytes(200, data, "image/png" if fmt == "png" else "image/jpeg")
             elif path.startswith("/api/users/"):
                 user = path[len("/api/users/"):]
                 data = api.backend.api_user(user)
                 self._json(200 if data else 404, data or {"error": "unknown user"})
+            elif path == "/api/entities":
+                self._json(200, api.backend.api_entities())
             elif path == "/api/events":
                 query = parse_qs(urlsplit(self.path).query)
                 n = int(query.get("n", ["50"])[0])
@@ -413,6 +438,8 @@ class _Handler(BaseHTTPRequestHandler):
                 elif kind == "status":
                     client.send_text(json.dumps({"type": "status", "id": req_id, "pc": api.backend.api_status(),
                                                  "users": api.backend.api_users()}, default=str))
+                elif kind == "entities":
+                    client.send_text(json.dumps({"type": "entities", "id": req_id, **api.backend.api_entities()}, default=str))
                 elif kind == "command":
                     if not can_write and not api.token_ok(msg.get("token")):
                         client.send_text(json.dumps({"type": "result", "id": req_id, "ok": False, "error": "token required"}))

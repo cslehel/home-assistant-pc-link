@@ -1,4 +1,13 @@
-"""Home Assistant MQTT discovery payload builders."""
+"""Home Assistant entity definitions.
+
+Every entity is described once, here, and rendered two ways:
+
+* as an **MQTT discovery** payload (``Entity.payload``) for the classic
+  broker-based setup, and
+* as a transport-neutral **catalog entry** (``Entity.catalog_entry()``) that
+  the local API serves at ``GET /api/entities`` and that the native Home
+  Assistant integration (``custom_components/pclink``) turns into entities.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -66,10 +75,29 @@ class Entity:
     component: str
     object_id: str
     payload: dict[str, Any]
+    # Transport-neutral description used by the local API / native integration.
+    # Empty for MQTT-only items (device triggers, the availability-based power
+    # sensor, the fleet roll-up), which the native integration provides itself.
+    spec: dict[str, Any] = field(default_factory=dict)
 
     @property
     def unique_id(self) -> str:
         return self.payload.get("unique_id", self.object_id)
+
+    def catalog_entry(self) -> Optional[dict[str, Any]]:
+        """Entry for ``GET /api/entities`` (None when this entity is MQTT-only)."""
+        if not self.spec:
+            return None
+        entry = {"unique_id": self.unique_id, "key": self.object_id, **self.spec}
+        return {k: v for k, v in entry.items() if v is not None}
+
+
+def _tag(entities: list[Entity], **fields: Any) -> list[Entity]:
+    """Stamp ``fields`` (source / user) onto every catalog-able entity."""
+    for ent in entities:
+        if ent.spec:
+            ent.spec.update(fields)
+    return entities
 
 
 @dataclass
@@ -150,7 +178,11 @@ class EntityFactory:
         if attributes_key:
             payload["json_attributes_topic"] = topic
             payload["json_attributes_template"] = "{{ %s | default({}) | tojson }}" % self._path(attributes_key)
-        return Entity("sensor", object_id, payload)
+        spec = {"platform": "sensor", "name": name, "value": key, "attributes": attributes_key, "unit": unit,
+                "device_class": device_class, "state_class": state_class, "icon": icon,
+                "category": "diagnostic" if diagnostic else None, "enabled": enabled, "options": options,
+                "precision": precision}
+        return Entity("sensor", object_id, payload, spec)
 
     def binary_sensor(self, object_id: str, name: str, key: str, *, state_topic: Optional[str] = None,
                       device_class: Optional[str] = None, icon: Optional[str] = None,
@@ -160,7 +192,9 @@ class EntityFactory:
             value_template="{{ 'ON' if %s else 'OFF' }}" % self._path(key),
             device_class=device_class, icon=icon, entity_category="diagnostic" if diagnostic else None,
         )
-        return Entity("binary_sensor", object_id, payload)
+        spec = {"platform": "binary_sensor", "name": name, "value": key, "device_class": device_class, "icon": icon,
+                "category": "diagnostic" if diagnostic else None}
+        return Entity("binary_sensor", object_id, payload, spec)
 
     def switch(self, object_id: str, name: str, key: str, *, state_topic: Optional[str] = None,
                icon: Optional[str] = None, config: bool = True) -> Entity:
@@ -171,7 +205,9 @@ class EntityFactory:
             payload_on="ON", payload_off="OFF", icon=icon,
             entity_category="config" if config else None,
         )
-        return Entity("switch", object_id, payload)
+        spec = {"platform": "switch", "name": name, "value": key, "icon": icon,
+                "category": "config" if config else None, "command": object_id}
+        return Entity("switch", object_id, payload, spec)
 
     def number(self, object_id: str, name: str, key: str, *, state_topic: Optional[str] = None,
                minimum: float = 0, maximum: float = 1440, step: float = 5, unit: str = "min",
@@ -182,7 +218,10 @@ class EntityFactory:
             min=minimum, max=maximum, step=step, unit_of_measurement=unit, mode=mode, icon=icon,
             entity_category="config" if config else None,
         )
-        return Entity("number", object_id, payload)
+        spec = {"platform": "number", "name": name, "value": key, "min": minimum, "max": maximum, "step": step,
+                "unit": unit, "mode": mode, "icon": icon, "category": "config" if config else None,
+                "command": object_id}
+        return Entity("number", object_id, payload, spec)
 
     def button(self, object_id: str, name: str, *, icon: Optional[str] = None,
                device_class: Optional[str] = None, config: bool = False) -> Entity:
@@ -190,7 +229,9 @@ class EntityFactory:
             object_id, name, command_topic=self.set_topic(object_id), payload_press="PRESS",
             icon=icon, device_class=device_class, entity_category="config" if config else None,
         )
-        return Entity("button", object_id, payload)
+        spec = {"platform": "button", "name": name, "icon": icon, "device_class": device_class,
+                "category": "config" if config else None, "command": object_id}
+        return Entity("button", object_id, payload, spec)
 
     def text(self, object_id: str, name: str, *, icon: Optional[str] = None, password: bool = False,
              state_topic: Optional[str] = None, key: Optional[str] = None, config: bool = False) -> Entity:
@@ -201,11 +242,14 @@ class EntityFactory:
             value_template=self._tpl(key) if key else None,
             entity_category="config" if config else None,
         )
-        return Entity("text", object_id, payload)
+        spec = {"platform": "text", "name": name, "value": key, "icon": icon, "password": password or None,
+                "category": "config" if config else None, "command": object_id}
+        return Entity("text", object_id, payload, spec)
 
     def camera(self, object_id: str, name: str, topic: str, *, icon: Optional[str] = None) -> Entity:
         payload = self._base(object_id, name, topic=topic, icon=icon)
-        return Entity("camera", object_id, payload)
+        spec = {"platform": "camera", "name": name, "value": "screenshot", "icon": icon}
+        return Entity("camera", object_id, payload, spec)
 
     def trigger(self, object_id: str, trigger_type: str, subtype: str, topic: str, payload: str) -> Entity:
         """A native HA *device trigger* (``device_automation``): no state, just an event."""
@@ -308,7 +352,7 @@ class EntityFactory:
         e.append(self.text("broadcast_message", "Message to everyone", icon="mdi:message-alert"))
         for cmd in self.cfg.commands:
             e.append(self.button(f"cmd_{cmd.slug}", cmd.name, icon=cmd.icon))
-        return e
+        return _tag(e, source="pc")
 
     # -- per user -------------------------------------------------------------
     def user_entities(self, user: str, policy: Optional[UserPolicy], managed: bool) -> list[Entity]:
@@ -386,7 +430,7 @@ class EntityFactory:
         e.append(self.button(pre + "logoff", f"{label} log off", icon="mdi:logout"))
         e.append(self.button(pre + "lock", f"{label} lock", icon="mdi:lock"))
         e.append(self.text(pre + "message", f"{label} message", icon="mdi:message-text"))
-        return e
+        return _tag(e, source="user", user=user, user_name=label, managed=managed)
 
     def screenshot_topic(self, slug: str) -> str:
         return f"{self.base_topic}/user/{slug}/screenshot"
@@ -477,4 +521,4 @@ class EntityFactory:
                     precision=0 if r.sensor_type in ("fan", "clock", "load") else 1,
                 )
             )
-        return e
+        return _tag(e, source="pc")

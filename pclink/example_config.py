@@ -28,7 +28,13 @@ EMBEDDED = r'''# ===============================================================
 # (mqtt / storage / logging / ports need one - the log tells you).
 # ======================================================================
 
+# Home Assistant can be reached two ways (docs/HOMEASSISTANT.md):
+#  - the PC Link integration (recommended, no broker): enable `api` below
+#    (`python -m pclink api-token` prints a ready-made block), or
+#  - MQTT discovery: point `mqtt` at your broker.
 mqtt:
+  enabled: true                  # false: no broker at all (integration only)
+  discovery: true                # false: keep the broker for other PCs but let the integration create the entities
   host: homeassistant.local      # your MQTT broker (usually the HA host)
   port: 1883
   username: pclink               # broker credentials (recommended)
@@ -217,12 +223,13 @@ screenshots:                     # parent-only screenshot on demand (camera enti
   retain: false                  # keep the last image on the broker
   save_to_disk: false            # also keep the last `keep` images in %ProgramData%\PCLink\screenshots
 
-api:                             # optional local REST/WebSocket API + setup page (docs/API.md)
-  enabled: false
-  host: 127.0.0.1                # anything else requires a token
+api:                             # local REST/WebSocket API + setup page (docs/API.md); the HA integration uses it
+  enabled: false                 # set true for the Home Assistant integration
+  host: 127.0.0.1                # 0.0.0.0 for the integration (then a token is mandatory)
   port: 47392
-  # token: change-me             # required for writes (commands, config edits)
+  # token: change-me             # required for writes (commands, config edits) and for any access off this PC
   allow_config_edit: true
+  advertise: true                # announce the API on the LAN (mDNS) so Home Assistant discovers the PC
 
 fleet:                           # multi-PC roll-up device "PC Link (all PCs)"
   enabled: true

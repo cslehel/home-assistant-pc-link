@@ -30,6 +30,8 @@ commands:
   pin-hash <pin>             print a parent_pin_sha256 value for the config
   unblock-all [--config]     restore logon hours / enable all managed accounts
   test-mqtt [--config]       connect to the broker and publish a test message
+  api-token                  print a fresh API token and the api: block to paste into
+                             config.yaml (for the Home Assistant integration)
   agent                      (internal) per-session user agent
   version
 """
@@ -90,7 +92,19 @@ def cmd_check_config(argv: list[str]) -> int:
     tl = cfg.time_limits
     print(f"config OK: {path}")
     print(f"  device: {cfg.device.name} (id {cfg.device.id})")
-    print(f"  mqtt:   {cfg.mqtt.host}:{cfg.mqtt.port} (discovery prefix {cfg.mqtt.discovery_prefix})")
+    if cfg.mqtt.enabled:
+        print(f"  mqtt:   {cfg.mqtt.host}:{cfg.mqtt.port} (discovery {'on' if cfg.mqtt.discovery else 'off'}, "
+              f"prefix {cfg.mqtt.discovery_prefix})")
+    else:
+        print("  mqtt:   disabled")
+    if cfg.api.enabled:
+        reach = "LAN" if cfg.api.host not in ("127.0.0.1", "localhost", "::1") else "this PC only"
+        print(f"  api:    http://{cfg.api.host}:{cfg.api.port}/ ({reach}; token {'set' if cfg.api.token else 'NOT set - read-only'}; "
+              f"mDNS {'on' if cfg.api.advertise else 'off'})")
+    else:
+        print("  api:    disabled (enable it for the Home Assistant integration; see docs/HOMEASSISTANT.md)")
+    if not cfg.mqtt.enabled and not cfg.api.enabled:
+        print("  WARNING: neither MQTT nor the API is enabled; Home Assistant cannot reach this PC")
     print(f"  block:  {tl.block_method}; parent PIN: {'set' if tl.pin_enabled else 'not set'}; "
           f"shared budget: {tl.shared_budget}; week starts {tl.week_start}")
     extras = []
@@ -189,6 +203,29 @@ def cmd_unblock_all(argv: list[str]) -> int:
     return 0
 
 
+def cmd_api_token(argv: list[str]) -> int:
+    """Print a random token plus the ``api:`` block that enables the LAN API for the HA integration."""
+    import secrets
+
+    token = secrets.token_urlsafe(24)
+    print(api_block(token))
+    return 0
+
+
+def api_block(token: str) -> str:
+    return (
+        "# paste into %ProgramData%\\PCLink\\config.yaml (then restart the service):\n"
+        "api:\n"
+        "  enabled: true\n"
+        "  host: 0.0.0.0          # reachable from Home Assistant\n"
+        "  port: 47392\n"
+        f"  token: {token}\n"
+        "\n"
+        "# In Home Assistant: Settings -> Devices & services -> Add integration -> PC Link,\n"
+        "# enter this PC's address, port 47392 and the token above."
+    )
+
+
 def cmd_test_mqtt(argv: list[str]) -> int:
     path = _config_arg(argv)
     cfg = Config.load(path)
@@ -241,6 +278,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_unblock_all(rest)
     if cmd == "test-mqtt":
         return cmd_test_mqtt(rest)
+    if cmd == "api-token":
+        return cmd_api_token(rest)
     print(USAGE)
     return 1
 

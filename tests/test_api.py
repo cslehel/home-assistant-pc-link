@@ -38,6 +38,13 @@ class FakeBackend:
         self.commands.append(data)
         return {"ok": data.get("action") != "bad", "error": None if data.get("action") != "bad" else "bad action"}
 
+    def api_entities(self):
+        return {"device": {"identifiers": ["pclink_x"], "name": "X"}, "version": "test", "users": {"kevin": {"name": "Kevin", "managed": True}},
+                "entities": [{"unique_id": "pclink_x_cpu", "key": "cpu_percent", "platform": "sensor", "value": "cpu_percent", "source": "pc"}]}
+
+    def api_screenshot(self, user):
+        return (b"PNGDATA", "png") if user.lower() == "kevin" else None
+
     def api_config_text(self):
         return self.config_text
 
@@ -242,4 +249,30 @@ def test_websocket_with_token_is_writable(server):
     ws.send(json.dumps({"action": "focus", "user": "kevin"}))  # type defaults to command
     msg = ws.recv_json()
     assert msg["ok"] and backend.commands[-1]["action"] == "focus"
+    ws.close()
+
+
+def test_entities_catalog_and_screenshot_endpoints(server):
+    srv, backend = server
+    status, body = call(srv, "GET", "/api/entities")
+    assert status == 200 and body["entities"][0]["key"] == "cpu_percent" and body["users"]["kevin"]["managed"]
+    # screenshots always need the token, even on loopback
+    assert call(srv, "GET", "/api/users/kevin/screenshot")[0] == 401
+    url = f"http://127.0.0.1:{srv.port}/api/users/kevin/screenshot"
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer s3cret"})
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        assert resp.status == 200 and resp.headers["Content-Type"] == "image/png" and resp.read() == b"PNGDATA"
+    assert call(srv, "GET", "/api/users/dad/screenshot", token="s3cret")[0] == 404
+    assert call(srv, "GET", "/api/users/kevin")[1]["user"] == "kevin"  # plain user route still works
+
+
+def test_websocket_entities_request(server):
+    srv, backend = server
+    ws = WsClient(srv.port, token="s3cret")
+    hello = ws.recv_json()
+    assert hello["type"] == "hello" and hello["writable"] is True
+    ws.send(json.dumps({"type": "entities", "id": 7}))
+    msg = ws.recv_json()
+    assert msg["type"] == "entities" and msg["id"] == 7 and msg["entities"][0]["platform"] == "sensor"
+    assert msg["device"]["name"] == "X"
     ws.close()

@@ -687,3 +687,113 @@ def test_fleet_rollup_published_by_leader_and_shared_budget():
     # a peer with a smaller id takes over leadership
     orch.on_peer_message("pclink/000-first/availability", b"online")
     assert not orch.fleet.is_leader()
+
+
+# ---------------------------------------------------------------------------
+# local API backend: entity catalog, "set" action, screenshots, running without MQTT
+# ---------------------------------------------------------------------------
+
+def test_api_entities_catalog_and_set_action():
+    now = datetime(2026, 9, 28, 12, 0, 0)
+    orch, sessions, blocker, mqtt = build(now)
+    sessions.sessions = [session()]
+    orch.tick()
+    cat = orch.api_entities()
+    assert cat["device"]["identifiers"] == ["pclink_testpc"] and cat["version"]
+    assert cat["triggers"]["user"]["time_up"] == "ran out of time" and "started" in cat["triggers"]["pc"]
+    assert cat["users"] == {"kevin": {"name": "kevin", "managed": True}, "dad": {"name": "dad", "managed": False}}
+    keys = {e["key"] for e in cat["entities"]}
+    assert {"cpu_percent", "time_limits_enabled", "user_kevin_blocked", "user_kevin_time_remaining",
+            "user_kevin_limit_today", "user_dad_time_used_today"} <= keys
+    assert "user_dad_limit_today" not in keys and "online" not in keys
+    assert len(keys) == len(cat["entities"])  # keys are unique
+    # entity commands through the JSON "set" action (what the native integration sends)
+    assert orch.api_command({"action": "set", "entity": "user_kevin_blocked", "value": "ON"})["ok"]
+    assert orch.timekeeper.manually_blocked("kevin")
+    assert orch.api_command({"action": "set", "entity": "user_kevin_blocked", "value": False})["ok"]
+    assert not orch.timekeeper.manually_blocked("kevin")
+    assert orch.api_command({"action": "set", "entity": "user_kevin_limit_today", "value": 200})["ok"]
+    assert orch.timekeeper.effective_limit_minutes("kevin", now.date()) == 200
+    assert orch.api_command({"action": "set", "entity": "time_limits_enabled", "value": "OFF"})["ok"]
+    assert not orch.timekeeper.global_enabled
+    assert orch.api_command({"action": "set", "entity": "user_kevin_add_15", "value": "PRESS"})["ok"]
+    assert orch.timekeeper.bonus_seconds("kevin", now.date()) == 15 * 60
+    assert not orch.api_command({"action": "set"})["ok"]
+    assert not orch.api_command({"action": "set", "entity": "cmd", "value": {}})["ok"]
+    assert "unknown" in orch.api_command({"action": "set", "entity": "nonsense", "value": "x"})["error"]
+    assert orch._last_api_push == 0.0  # a command forces the next state push
+
+
+def test_set_action_is_pin_gated_and_reports_the_reason():
+    now = datetime(2026, 9, 28, 12, 0, 0)
+    orch, sessions, blocker, mqtt = build(now, PIN_YAML)
+    sessions.sessions = [session()]
+    orch.tick()
+    r = orch.api_command({"action": "set", "entity": "user_kevin_add_15", "value": "PRESS"})
+    assert r == {"ok": False, "error": "parent pin required"}
+    assert orch.api_command({"action": "set", "entity": "user_kevin_add_15", "value": "PRESS", "pin": "2468"})["ok"]
+    assert orch.timekeeper.bonus_seconds("kevin", now.date()) == 15 * 60
+    orch.pin.lock()  # the inline PIN unlocked the session for pin_timeout_seconds
+    r = orch.api_command({"action": "set", "entity": "time_limits_enabled", "value": "OFF"})
+    assert r == {"ok": False, "error": "parent pin required"} and orch.timekeeper.global_enabled
+    assert orch.api_command({"action": "set", "entity": "time_limits_enabled", "value": "OFF", "pin": "2468"})["ok"]
+
+
+def test_api_screenshot_bytes_are_kept():
+    import base64
+    now = datetime(2026, 9, 28, 12, 0, 0)
+    orch, sessions, blocker, mqtt = build(now, """
+        device: {name: TestPC}
+        telemetry: {interval_seconds: 0}
+        screenshots: {enabled: true, require_pin: false, format: png}
+        time_limits: {users: [{name: kevin, daily_limit_minutes: 60}]}
+    """, agent=True)
+    orch._agent.connected.add(2)
+    sessions.sessions = [session()]
+    orch.tick()
+    assert orch.api_screenshot("kevin") is None
+    r = orch.api_command({"action": "screenshot", "user": "kevin"})
+    assert r["ok"]
+    orch.on_agent_message(2, {"type": "screenshot", "id": r["id"], "format": "png", "width": 8, "height": 8,
+                              "data": base64.b64encode(b"PNGDATA").decode()})
+    orch.tick()
+    assert orch.api_screenshot("KEVIN") == (b"PNGDATA", "png")
+    assert orch.api_screenshot("nobody") is None
+
+
+def test_runs_without_mqtt_and_still_serves_the_catalog():
+    import yaml
+    now = datetime(2026, 9, 28, 12, 0, 0)
+    cfg = Config.from_dict(yaml.safe_load("""
+        device: {name: TestPC}
+        mqtt: {enabled: false}
+        telemetry: {interval_seconds: 0}
+        time_limits: {users: [{name: kevin, daily_limit_minutes: 60}]}
+    """))
+    sessions = FakeSessions()
+    orch = Orchestrator(cfg, store=Store(":memory:"), sessions=sessions, blocker=FakeBlocker(), mqtt=None,
+                        clock=lambda: now)
+    assert orch.fleet is None
+    sessions.sessions = [session()]
+    orch.tick()
+    orch.tick()
+    cat = orch.api_entities()
+    assert "user_kevin_time_remaining" in {e["key"] for e in cat["entities"]}
+    assert orch.api_users()["kevin"]["status"] == "active"
+    assert orch.api_health()["name"] == "TestPC" and orch.api_health()["mqtt_connected"] is False
+    assert orch.api_command({"action": "set", "entity": "user_kevin_blocked", "value": "ON"})["ok"]
+
+
+def test_mqtt_discovery_can_be_turned_off():
+    now = datetime(2026, 9, 28, 12, 0, 0)
+    orch, sessions, blocker, mqtt = build(now, """
+        device: {name: TestPC}
+        mqtt: {discovery: false}
+        telemetry: {interval_seconds: 0}
+        time_limits: {users: [{name: kevin, daily_limit_minutes: 60}]}
+    """)
+    sessions.sessions = [session()]
+    orch.tick()
+    assert mqtt.discovery == {}                       # no HA discovery payloads
+    assert mqtt.state_topic in mqtt.published         # state still flows for other PCs (fleet)
+    assert mqtt.user_state_topic("kevin") in mqtt.published

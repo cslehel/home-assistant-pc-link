@@ -19,3 +19,14 @@ python -m pclink check-config
 python -m pclink install
 python -m pclink start
 Write-Host "Installed and started. Manage with: python -m pclink stop|restart|remove" -ForegroundColor Green
+
+# Home Assistant integration: open the API port if the API is enabled for the LAN.
+$cfg = Get-Content "$env:ProgramData\PCLink\config.yaml" -Raw
+if ($cfg -match "(?ms)^api:\s*\n(?:[ \t]+.*\n)*?[ \t]+enabled:\s*true" -and $cfg -notmatch "(?m)^[ \t]+host:\s*127\.0\.0\.1") {
+    $port = 47392
+    if ($cfg -match "(?m)^[ \t]+port:\s*(\d+)") { $port = [int]$Matches[1] }
+    if (-not (Get-NetFirewallRule -DisplayName "PC Link API" -ErrorAction SilentlyContinue)) {
+        New-NetFirewallRule -DisplayName "PC Link API" -Direction Inbound -Protocol TCP -LocalPort $port -Action Allow -Profile Private | Out-Null
+        Write-Host "Firewall: allowed TCP $port (PC Link API) on private networks." -ForegroundColor Green
+    }
+}
