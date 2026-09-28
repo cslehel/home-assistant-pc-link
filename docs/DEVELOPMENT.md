@@ -83,6 +83,18 @@ service registers `pclink.exe service` as its binary and starts agents as
 
 ## Releasing
 
-Bump the version in `pclink/__init__.py`, `pyproject.toml` and
-`custom_components/pclink/manifest.json` together and tag the release; HACS
-picks the integration up from the tag.
+1. Bump the version in `pclink/__init__.py`, `pyproject.toml` and
+   `custom_components/pclink/manifest.json` together, and add a section for it
+   to `CHANGELOG.md` (the tests fail when the three numbers differ or the
+   section is missing). Merge to `main`.
+2. Publish, in any of these ways:
+   - GitHub: **Actions** tab, **Release** workflow, **Run workflow** on `main`.
+     It creates the tag `vX.Y.Z` itself.
+   - Push a tag: `git tag -a vX.Y.Z -m "PC Link X.Y.Z" && git push origin vX.Y.Z`.
+   - Create the release by hand on GitHub with a new `vX.Y.Z` tag; the
+     workflow then attaches the zip to it.
+
+The workflow (`.github/workflows/release.yml`) builds and tests the Windows
+zip, checks the tag against all three version numbers, and publishes the
+release with the zip attached and the changelog section as its notes. HACS
+installs the integration from the release tag.

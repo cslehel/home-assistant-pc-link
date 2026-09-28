@@ -1,16 +1,33 @@
 name: Release
 
-# Push a version tag (e.g. v0.3.0) to publish a GitHub release: the standalone
-# Windows zip is built and tested by build.yml, the tag is checked against
-# every version number in the project, and the release notes come from
-# CHANGELOG.md.
+# Publishes a GitHub release with the standalone Windows zip (built and tested
+# by build.yml) and release notes from CHANGELOG.md. Three ways to start it:
+#
+#  * Actions tab > Release > Run workflow (on main): creates the tag vX.Y.Z for
+#    the version in pclink/__init__.py and publishes the release.
+#  * Push a tag vX.Y.Z.
+#  * Create the release by hand on GitHub with a new tag vX.Y.Z: the tag push
+#    starts this workflow, which attaches the zip (and fills in empty notes).
+#
+# The tag must match the version in pclink/__init__.py, manifest.json and
+# pyproject.toml, and CHANGELOG.md must have a section for it.
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 0.3.0 (leave empty for the version in pclink/__init__.py)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -26,20 +43,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check the tag matches every version number
+      - name: Work out the tag and check every version number
+        id: tag
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          BUILT: ${{ needs.build.outputs.version }}
         run: |
-          tag="${GITHUB_REF_NAME#v}"
-          built="${{ needs.build.outputs.version }}"
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            wanted="${INPUT_VERSION:-$BUILT}"
+            tag="v${wanted#v}"
+          fi
+          version="${tag#v}"
           manifest=$(python3 -c "import json; print(json.load(open('custom_components/pclink/manifest.json'))['version'])")
           pyproject=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
-          echo "tag=$tag package=$built manifest=$manifest pyproject=$pyproject"
-          if [ "$tag" != "$built" ] || [ "$tag" != "$manifest" ] || [ "$tag" != "$pyproject" ]; then
-            echo "::error::The tag does not match the version in pclink/__init__.py, manifest.json and pyproject.toml"
+          echo "tag=$tag package=$BUILT manifest=$manifest pyproject=$pyproject"
+          if [ "$version" != "$BUILT" ] || [ "$version" != "$manifest" ] || [ "$version" != "$pyproject" ]; then
+            echo "::error::$tag does not match the version in pclink/__init__.py ($BUILT), manifest.json ($manifest) and pyproject.toml ($pyproject)"
             exit 1
           fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Release notes
-        run: python3 scripts/release_notes.py "$GITHUB_REF_NAME" > notes.md
+        run: python3 scripts/release_notes.py "${{ steps.tag.outputs.tag }}" > notes.md
 
       - uses: actions/download-artifact@v4
         with:
@@ -48,6 +75,19 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          ZIP: ${{ needs.build.outputs.artifact }}.zip
         run: |
-          gh release create "$GITHUB_REF_NAME" "${{ needs.build.outputs.artifact }}.zip" \
-            --title "PC Link $GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG exists already: attaching the zip."
+            gh release upload "$TAG" "$ZIP" --clobber
+            if [ -z "$(gh release view "$TAG" --json body --jq .body)" ]; then
+              gh release edit "$TAG" --notes-file notes.md
+            fi
+          elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            gh release create "$TAG" "$ZIP" --title "PC Link $TAG" --notes-file notes.md --verify-tag
+          else
+            # Run from the Actions tab: create the tag on the commit this run was started on.
+            gh release create "$TAG" "$ZIP" --title "PC Link $TAG" --notes-file notes.md --target "$GITHUB_SHA"
+          fi
+          gh release view "$TAG" --json url,assets --jq '.url, (.assets[] | "  " + .name)'
