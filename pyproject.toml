@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "home-assistant-pc-link"
+version = "0.1.0"
+description = "Windows service that bridges a (multiseat) PC to Home Assistant: per-user screen-time limits, login blocking, telemetry, hardware sensors, power control and activity tracking."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "cslehel" }]
+keywords = ["home-assistant", "mqtt", "parental-controls", "screen-time", "windows-service", "aster", "multiseat"]
+dependencies = ["psutil>=5.9", "paho-mqtt>=2.0", "PyYAML>=6.0"]
+
+[project.optional-dependencies]
+windows = ["pywin32>=306", "comtypes>=1.2", "nvidia-ml-py>=12.535"]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+pclink = "pclink.__main__:main"
+
+[tool.setuptools]
+packages = ["pclink", "pclink.agent"]
+
+[tool.setuptools.package-data]
+pclink = ["../config.example.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

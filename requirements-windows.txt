@@ -1,0 +1,6 @@
+-r requirements.txt
+# Windows service, session control, tray icon, UI Automation:
+pywin32>=306
+comtypes>=1.2
+# NVIDIA GPU metrics (optional; harmless if no NVIDIA card):
+nvidia-ml-py>=12.535
