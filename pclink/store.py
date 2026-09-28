@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -31,6 +32,10 @@ CREATE TABLE IF NOT EXISTS site_usage (
     user TEXT NOT NULL, day TEXT NOT NULL, domain TEXT NOT NULL, seconds REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (user, day, domain)
 );
+CREATE TABLE IF NOT EXISTS rule_usage (
+    user TEXT NOT NULL, day TEXT NOT NULL, rule TEXT NOT NULL, seconds REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (user, day, rule)
+);
 CREATE TABLE IF NOT EXISTS settings (
     user TEXT NOT NULL, key TEXT NOT NULL, value TEXT,
     PRIMARY KEY (user, key)
@@ -49,6 +54,17 @@ class UsageTotals:
     browsing: float = 0.0
 
 
+_ISO_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _dated_key_day(key: str) -> Optional[str]:
+    """Return the ISO day a per-day setting key ends with, else None."""
+    if ":" not in key:
+        return None
+    tail = key.rsplit(":", 1)[1]
+    return tail if _ISO_DAY_RE.match(tail) else None
+
+
 class Store:
     GLOBAL = "_global"
 
@@ -65,9 +81,11 @@ class Store:
         self._usage: dict[tuple[str, str], UsageTotals] = {}
         self._apps: dict[tuple[str, str], dict[str, float]] = {}
         self._sites: dict[tuple[str, str], dict[str, float]] = {}
+        self._rules: dict[tuple[str, str], dict[str, float]] = {}
         self._dirty_usage: set[tuple[str, str]] = set()
         self._dirty_apps: set[tuple[str, str]] = set()
         self._dirty_sites: set[tuple[str, str]] = set()
+        self._dirty_rules: set[tuple[str, str]] = set()
         self._settings: dict[tuple[str, str], Any] = {}
         self._load_settings()
 
@@ -131,6 +149,36 @@ class Store:
             bucket = self._bucket(self._sites, "site_usage", "domain", user, day)
             return sorted(bucket.items(), key=lambda kv: kv[1], reverse=True)[:n]
 
+    # -- per-rule usage (app / site limits) ------------------------------------
+    def add_rule(self, user: str, day: date, rule: str, seconds: float) -> None:
+        if seconds <= 0 or not rule:
+            return
+        with self._lock:
+            bucket = self._bucket(self._rules, "rule_usage", "rule", user, day)
+            bucket[rule] = bucket.get(rule, 0.0) + seconds
+            self._dirty_rules.add((user.lower(), day.isoformat()))
+
+    def rule_seconds(self, user: str, day: date, rule: str) -> float:
+        with self._lock:
+            return self._bucket(self._rules, "rule_usage", "rule", user, day).get(rule, 0.0)
+
+    def rule_usage(self, user: str, day: date) -> dict[str, float]:
+        with self._lock:
+            return dict(self._bucket(self._rules, "rule_usage", "rule", user, day))
+
+    # -- ranges (weekly budgets) ----------------------------------------------------
+    def usage_range(self, user: str, start: date, end: date) -> UsageTotals:
+        """Sum of daily totals from ``start`` to ``end`` (both inclusive)."""
+        total = UsageTotals()
+        day = start
+        while day <= end:
+            t = self.usage(user, day)
+            total.active += t.active
+            total.gaming += t.gaming
+            total.browsing += t.browsing
+            day += timedelta(days=1)
+        return total
+
     def history(self, user: str, days: int = 7, today: Optional[date] = None) -> list[dict[str, Any]]:
         today = today or date.today()
         out = []
@@ -189,17 +237,31 @@ class Store:
             except sqlite3.Error as exc:  # never let logging break the service
                 log.debug("event insert failed: %s", exc)
 
-    def recent_events(self, n: int = 20) -> list[dict[str, Any]]:
+    def recent_events(self, n: int = 20, user: Optional[str] = None, kind: Optional[str] = None,
+                      since: Optional[float] = None) -> list[dict[str, Any]]:
+        sql = "SELECT ts, user, kind, detail FROM events"
+        where, params = [], []
+        if user:
+            where.append("user=?")
+            params.append(user.lower())
+        if kind:
+            where.append("kind=?")
+            params.append(kind)
+        if since is not None:
+            where.append("ts>=?")
+            params.append(float(since))
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY ts DESC LIMIT ?"
+        params.append(int(n))
         with self._lock:
-            rows = self._db.execute(
-                "SELECT ts, user, kind, detail FROM events ORDER BY ts DESC LIMIT ?", (n,)
-            ).fetchall()
+            rows = self._db.execute(sql, params).fetchall()
         return [{"ts": ts, "user": u, "kind": k, "detail": d} for ts, u, k, d in rows]
 
     # -- maintenance --------------------------------------------------------
     def flush(self) -> None:
         with self._lock:
-            if not (self._dirty_usage or self._dirty_apps or self._dirty_sites):
+            if not (self._dirty_usage or self._dirty_apps or self._dirty_sites or self._dirty_rules):
                 return
             try:
                 self._db.execute("BEGIN")
@@ -224,6 +286,13 @@ class Store:
                             "ON CONFLICT(user, day, domain) DO UPDATE SET seconds=excluded.seconds",
                             (user, day, domain, secs),
                         )
+                for user, day in self._dirty_rules:
+                    for rule, secs in self._rules[(user, day)].items():
+                        self._db.execute(
+                            "INSERT INTO rule_usage(user, day, rule, seconds) VALUES(?,?,?,?) "
+                            "ON CONFLICT(user, day, rule) DO UPDATE SET seconds=excluded.seconds",
+                            (user, day, rule, secs),
+                        )
                 self._db.execute("COMMIT")
             except sqlite3.Error as exc:
                 log.error("store flush failed: %s", exc)
@@ -235,6 +304,7 @@ class Store:
             self._dirty_usage.clear()
             self._dirty_apps.clear()
             self._dirty_sites.clear()
+            self._dirty_rules.clear()
 
     def purge(self, retention_days: int, today: Optional[date] = None) -> None:
         if retention_days <= 0:
@@ -242,13 +312,15 @@ class Store:
         cutoff = ((today or date.today()) - timedelta(days=retention_days)).isoformat()
         with self._lock:
             try:
-                for table in ("usage", "app_usage", "site_usage"):
+                for table in ("usage", "app_usage", "site_usage", "rule_usage"):
                     self._db.execute(f"DELETE FROM {table} WHERE day < ?", (cutoff,))
                 self._db.execute("DELETE FROM events WHERE ts < ?", (time.time() - retention_days * 86400,))
-                for key in [k for k in self._settings if k[1].startswith(("bonus:", "limit:")) and k[1][k[1].index(":") + 1 :] < cutoff]:
+                # day-scoped settings end in an ISO date: bonus:<day>, limit:<day>, rollover:<day>,
+                # bedtime_ext:<day>, reward:<slug>:<day>, earned:<day>
+                for key in [k for k in self._settings if _dated_key_day(k[1]) is not None and _dated_key_day(k[1]) < cutoff]:
                     self.delete_setting(*key)
                 # drop stale in-memory day buckets
-                for cache in (self._usage, self._apps, self._sites):
+                for cache in (self._usage, self._apps, self._sites, self._rules):
                     for key in [k for k in cache if k[1] < cutoff]:
                         cache.pop(key, None)
             except sqlite3.Error as exc:

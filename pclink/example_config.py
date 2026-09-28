@@ -1,10 +1,31 @@
-"""Embedded copy of config.example.yaml (fallback for init-config)."""
+"""Embedded copy of config.example.yaml (fallback for init-config).
 
-EXAMPLE_CONFIG = r'''# ======================================================================
+Kept byte-identical to ``config.example.yaml`` (a test checks this); edit the
+YAML file and copy it here, or run ``scripts/sync_example_config.py``.
+"""
+import os
+
+_HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _load() -> str:
+    for candidate in (os.path.join(_HERE, "config.example.yaml"),
+                      os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.example.yaml")):
+        try:
+            with open(candidate, "r", encoding="utf-8") as fh:
+                return fh.read()
+        except OSError:
+            continue
+    return EMBEDDED
+
+
+EMBEDDED = r'''# ======================================================================
 # Home Assistant PC Link - configuration
 # ----------------------------------------------------------------------
 # Copy to  C:\ProgramData\PCLink\config.yaml  (or run: python -m pclink init-config)
 # Validate with:  python -m pclink check-config
+# The service watches this file and applies most changes without a restart
+# (mqtt / storage / logging / ports need one - the log tells you).
 # ======================================================================
 
 mqtt:
@@ -15,7 +36,7 @@ mqtt:
   # tls: true
   # tls_ca: C:\ProgramData\PCLink\ca.crt
   discovery_prefix: homeassistant # must match HA's MQTT discovery prefix
-  base_topic: pclink
+  base_topic: pclink             # PCs sharing a base topic see each other (fleet roll-up)
 
 device:
   # name: Family-PC              # defaults to the Windows computer name
@@ -26,6 +47,9 @@ telemetry:
   disks: true
   network: true
   gpu: true
+  top_processes: 0               # N > 0 -> "Top process" sensors (by CPU and by memory)
+  usb_devices: false             # connected USB devices + removable drives (polled every 5 min)
+  printers: false                # printer status / print jobs (polled every minute)
 
 hardware_sensors:
   enabled: true
@@ -51,11 +75,50 @@ time_limits:
   #   logoff_only     - do not block login, only log the user off
   block_method: logon_hours
   manage_unknown_users: false    # apply default_policy to users not listed below
+  week_start: mon                # first day of the week for weekly budgets
+  shared_budget: false           # true -> minutes on *other* PCs (same base_topic) count too
+
+  # Parent PIN: Home Assistant may only *loosen* limits (grant minutes, raise a
+  # limit, pause a limit, unblock, end focus mode, extend bedtime, screenshots)
+  # after the PIN was entered in the "Parent PIN" text entity (valid for
+  # pin_timeout_seconds) or passed as "pin" in a JSON command. Tightening never
+  # needs it. Use parent_pin_sha256 (python -m pclink pin-hash 1234) to avoid a
+  # plain-text PIN in this file.
+  # parent_pin: "1234"
+  # pin_timeout_seconds: 300
+  # pin_required_for: [grant, unblock, disable, focus_off, bedtime, screenshot]
 
   default_policy:                # used for new users when manage_unknown_users: true
     daily_limit_minutes: 120
     action: logoff
     warn_at_minutes: [15, 5, 1]
+
+  # Rules that apply to every managed user (a user block can add its own or
+  # override one with the same name). Match by process name, site or category.
+  rules:
+    - name: TikTok
+      sites: [tiktok.com]
+      blocked: true              # never allowed; the tab is closed
+    - name: Video
+      categories: [video]        # site categories from activity.site_categories
+      daily_limit_minutes: {weekdays: 45, weekend: 90}
+      allowed_hours: 12:00-20:00
+      warn_at_minutes: [5, 1]
+      action: close              # close | warn
+
+  # "Earn minutes": a button per reward appears in HA for every managed user.
+  rewards:
+    - name: Homework done
+      minutes: 30
+      daily_max: 1
+    - name: Chores
+      minutes: 15
+
+  # Break reminders (20-20-20 rule) for everyone; a user block can set its own.
+  breaks:
+    enabled: true
+    every_minutes: 20
+    duration_seconds: 20
 
   users:
     - name: kevin                # <- Windows account name
@@ -64,19 +127,41 @@ time_limits:
         weekdays: 90             # Mon-Fri
         weekend: 180             # Sat-Sun
         fri: 150                 # a single day overrides the group
+      weekly_limit_minutes: 600  # optional weekly budget on top of the daily one
+      rollover_max_minutes: 30   # unused minutes carry into the next day, up to this cap
       allowed_hours:
         all: 07:00-20:00         # only allowed to be logged in in this window
         weekend: 08:00-21:00
+      bedtime:                   # separate from allowed hours: extendable from HA,
+        weekdays: "20:30"        # auto-extended while a parent is home
+        weekend: "21:30"
+      wake_time: "07:00"
+      bedtime_parent_extension_minutes: 60   # while the "Parent at home" switch is on
       warn_at_minutes: [30, 15, 5, 1]
       action: logoff             # logoff | lock | shutdown
       grace_seconds: 60          # warning-to-action countdown
       count_idle: false          # idle time does not consume the budget
-      idle_threshold_minutes: 10
+      idle_threshold_minutes: 10 # ...once no input for this long
+      # count_away: false        # monitor asleep / screensaver / Windows says absent (default: same as count_idle)
+      count_passive: true        # watching a film or listening (no input) still counts
+      rules:
+        - name: Roblox
+          apps: [RobloxPlayerBeta.exe]
+          sites: [roblox.com]
+          daily_limit_minutes: {weekdays: 30, weekend: 60}
+      focus:                     # focus / homework mode (switch + duration in HA)
+        allow_apps: [winword.exe, excel.exe, code.exe]
+        allow_sites: [khanacademy.org, wikipedia.org, docs.google.com]
+        allow_categories: [education]
+        default_minutes: 60
+        counts_toward_limit: false   # homework time is free
+        # schedule: {weekdays: 16:00-17:00}   # automatic focus windows
 
     - name: sarah
       display_name: Sarah
       daily_limit_minutes: 150
       action: lock
+      breaks: false
 
     - name: dad                  # parents: statistics only, no limit
       unlimited: true
@@ -85,11 +170,18 @@ time_limits:
 
 activity:
   idle_seconds: 120              # no input for this long = idle
+  away_seconds: 600              # ...and this long with nothing playing = away
   audio_keeps_active: true       # playing audio counts as active (e.g. video)
+  media_keeps_active: true       # a full-screen video/game keeping the display on counts too
+  controller_input: true         # game controllers count as input
+  display_off_is_idle: true      # monitor asleep -> seat is away
+  screensaver_is_idle: true
+  windows_presence: true         # honour Windows' own "user not present" verdict
+  now_playing: true              # "now playing" sensor (media title) per user
   url_method: uia                # uia | title | off  (how the active site is read)
   group_sites_by: registrable    # registrable (youtube.com) | host (m.youtube.com)
   top_n: 10
-  # Categorise sites for nicer HA statistics (optional):
+  # Categorise sites for nicer HA statistics and for category rules (optional):
   site_categories:
     youtube.com: video
     netflix.com: video
@@ -110,6 +202,41 @@ power:
   allow_hibernate: true
   shutdown_delay_seconds: 10
 
+windows_update:
+  enabled: false                 # pending updates / reboot-pending sensors + "Check for updates"
+  check_interval_hours: 6
+  allow_install: false           # also expose an "Install updates" button
+
+screenshots:                     # parent-only screenshot on demand (camera entity per user)
+  enabled: false
+  require_pin: true              # needs the parent PIN (when one is configured)
+  users: []                      # empty = every managed user; parents are never captured
+  notify_user: true              # the user sees "a parent took a screenshot"
+  max_width: 1280
+  format: jpeg                   # jpeg (needs Pillow) | png
+  retain: false                  # keep the last image on the broker
+  save_to_disk: false            # also keep the last `keep` images in %ProgramData%\PCLink\screenshots
+
+api:                             # optional local REST/WebSocket API + setup page (docs/API.md)
+  enabled: false
+  host: 127.0.0.1                # anything else requires a token
+  port: 47392
+  # token: change-me             # required for writes (commands, config edits)
+  allow_config_edit: true
+
+fleet:                           # multi-PC roll-up device "PC Link (all PCs)"
+  enabled: true
+  publish_rollup: true
+
+# Apps Home Assistant can launch / close in the users' sessions:
+# apps:
+#   - name: Minecraft
+#     launch: C:\Program Files (x86)\Minecraft Launcher\MinecraftLauncher.exe
+#     process: javaw.exe
+#     icon: mdi:minecraft
+#   - name: Discord
+#     process: discord.exe       # close only
+
 # Optional custom buttons exposed to Home Assistant (button.<device>_<name>):
 # commands:
 #   - name: Mute volume
@@ -124,7 +251,10 @@ agent:
   enabled: true                  # per-session activity agent + tray icon
   tray_icon: true                # show the state icon in each user's system tray
   poll_seconds: 2
+  volume_control: true           # volume / mute entities per user
 
 logging:
   level: INFO
 '''
+
+EXAMPLE_CONFIG = _load()

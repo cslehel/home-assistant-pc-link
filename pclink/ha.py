@@ -33,17 +33,22 @@ class MqttBridge:
     """
 
     def __init__(self, cfg: MqttConfig, device_id: str, on_command: CommandHandler,
-                 on_connected: Optional[Callable[[], None]] = None):
+                 on_connected: Optional[Callable[[], None]] = None,
+                 extra_topics: Optional[list[str]] = None,
+                 on_peer: Optional[Callable[[str, bytes], None]] = None):
         self.cfg = cfg
         self.device_id = device_id
         self.base = f"{cfg.base_topic}/{device_id}"
         self.availability_topic = f"{self.base}/availability"
         self.state_topic = f"{self.base}/state"
         self.cmd_topic = f"{self.base}/cmd"
+        self.event_topic = f"{self.base}/event"
         self.set_prefix = f"{self.base}/set/"
         self.discovery_prefix = cfg.discovery_prefix
         self._on_command = on_command
         self._on_connected = on_connected
+        self._on_peer = on_peer
+        self.extra_topics: list[str] = list(extra_topics or [])
         self._client = None
         self._connected = threading.Event()
         self._lock = threading.Lock()
@@ -55,8 +60,8 @@ class MqttBridge:
     def set_topic(self, object_id: str) -> str:
         return f"{self.set_prefix}{object_id}"
 
-    def discovery_topic(self, component: str, object_id: str) -> str:
-        return f"{self.discovery_prefix}/{component}/{self.device_id}/{object_id}/config"
+    def discovery_topic(self, component: str, object_id: str, node_id: Optional[str] = None) -> str:
+        return f"{self.discovery_prefix}/{component}/{node_id or self.device_id}/{object_id}/config"
 
     # -- lifecycle ------------------------------------------------------------
     @property
@@ -109,7 +114,9 @@ class MqttBridge:
             return
         log.info("MQTT connected to %s:%s", self.cfg.host, self.cfg.port)
         self._connected.set()
-        client.subscribe([(self.set_prefix + "#", 1), (self.cmd_topic, 1), (f"{self.discovery_prefix}/status", 0)])
+        subs = [(self.set_prefix + "#", 1), (self.cmd_topic, 1), (f"{self.discovery_prefix}/status", 0)]
+        subs += [(t, 0) for t in self.extra_topics]
+        client.subscribe(subs)
         client.publish(self.availability_topic, "online", qos=1, retain=True)
         if self._on_connected:
             try:
@@ -144,6 +151,9 @@ class MqttBridge:
             if topic.startswith(self.set_prefix):
                 object_id = topic[len(self.set_prefix):]
                 self._on_command(object_id, payload)
+                return
+            if self._on_peer is not None and not topic.startswith(self.base + "/"):
+                self._on_peer(topic, msg.payload)
         except Exception:  # noqa: BLE001
             log.exception("command handling failed for %s", topic)
 
@@ -165,12 +175,17 @@ class MqttBridge:
         except Exception as exc:  # noqa: BLE001
             log.debug("publish to %s failed: %s", topic, exc)
 
-    def publish_discovery(self, component: str, object_id: str, payload: Optional[dict]) -> None:
-        topic = self.discovery_topic(component, object_id)
+    def publish_discovery(self, component: str, object_id: str, payload: Optional[dict],
+                          node_id: Optional[str] = None) -> None:
+        topic = self.discovery_topic(component, object_id, node_id)
         if payload is None:
             self.publish(topic, "", retain=True, qos=1)
         else:
             self.publish(topic, payload, retain=True, qos=1)
+
+    def publish_event(self, path: str, event: str) -> None:
+        """Device-trigger events: ``<base>/event/<path>`` with the event name as payload."""
+        self.publish(f"{self.event_topic}/{path}", event, retain=False, qos=1)
 
     def publish_availability(self, online: bool = True) -> None:
         self.publish(self.availability_topic, "online" if online else "offline", retain=True, qos=1)

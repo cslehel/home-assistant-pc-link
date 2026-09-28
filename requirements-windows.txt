@@ -4,3 +4,6 @@ pywin32>=306
 comtypes>=1.2
 # NVIDIA GPU metrics (optional; harmless if no NVIDIA card):
 nvidia-ml-py>=12.535
+# Optional extras (uncomment to enable):
+# Pillow>=10.0      # JPEG screenshots (PNG works without it)
+# winsdk>=1.0       # exact now-playing info from Windows media controls

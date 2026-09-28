@@ -36,13 +36,30 @@ Or run `scripts\install-service.ps1` which does the whole sequence.
 | `python -m pclink remove` | uninstall (restores default ACL first) |
 | `python -m pclink harden` / `unharden` | toggle tamper resistance |
 | `python -m pclink check-config` | validate the config file |
+| `python -m pclink pin-hash 1234` | print a `parent_pin_sha256` value for the config |
 | `python -m pclink unblock-all` | emergency: restore logon rights for all managed users |
 | `python -m pclink test-mqtt` | verify broker connectivity |
+
+Configuration changes are picked up automatically (hot reload); only `mqtt`,
+`storage`, `logging`, the agent's IPC port and the `api` section need a
+restart. With `api.enabled: true` a local status/setup page is available at
+`http://127.0.0.1:47392/` (see [API.md](API.md)).
+
+## Optional extras
+- `Pillow` — JPEG screenshots (`screenshots.format: jpeg`); without it
+  screenshots are PNG.
+- `winsdk` — exact "now playing" information from Windows' media controls;
+  without it the title is read from the player's window title.
+
+```powershell
+pip install Pillow winsdk
+```
 
 ## Where things live
 - Config: `%ProgramData%\PCLink\config.yaml`
 - Database: `%ProgramData%\PCLink\pclink.db`
 - Logs: `%ProgramData%\PCLink\logs\` (service and per-session `agent-*.log`)
+- Screenshots (only with `screenshots.save_to_disk`): `%ProgramData%\PCLink\screenshots\`
 
 ## Emergency recovery
 If a user is wrongly locked out:

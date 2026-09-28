@@ -21,7 +21,8 @@ _IS_WIN = sys.platform == "win32"
 STATE_COLORS = {
     "ok": (0x2E, 0xA0, 0x43),         # green - connected, time remaining
     "warn": (0xE6, 0xA2, 0x17),       # amber - little time left
-    "blocked": (0xC0, 0x39, 0x2B),    # red   - out of time / paused
+    "blocked": (0xC0, 0x39, 0x2B),    # red   - out of time / paused / bedtime
+    "focus": (0x25, 0x63, 0xEB),      # blue  - focus / homework mode
     "offline": (0x8A, 0x8A, 0x8A),    # grey  - not connected to service
 }
 

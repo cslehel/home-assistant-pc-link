@@ -20,6 +20,7 @@ from .models import AgentReport
 log = logging.getLogger(__name__)
 
 MAX_LINE = 64 * 1024
+MAX_LINE_LARGE = 8 * 1024 * 1024   # screenshots travel as one base64 JSON line
 
 
 def _send_line(sock: socket.socket, lock: threading.Lock, message: dict[str, Any]) -> bool:
@@ -45,10 +46,12 @@ class _Conn:
 class AgentServer:
     def __init__(self, host: str, port: int, on_report: Callable[[int, AgentReport], None],
                  validate: Callable[[int, str], bool], on_connect: Optional[Callable[[int, str, int], None]] = None,
-                 on_disconnect: Optional[Callable[[int], None]] = None, idle_timeout: float = 120.0):
+                 on_disconnect: Optional[Callable[[int], None]] = None, idle_timeout: float = 120.0,
+                 on_message: Optional[Callable[[int, dict[str, Any]], None]] = None):
         self.host, self.port = host, port
         self._on_report, self._validate = on_report, validate
         self._on_connect, self._on_disconnect = on_connect, on_disconnect
+        self._on_message = on_message
         self.idle_timeout = idle_timeout
         self._conns: dict[int, _Conn] = {}
         self._lock = threading.Lock()
@@ -158,7 +161,7 @@ class AgentServer:
                 self._on_connect(session_id, conn.user, conn.pid)
             while not self._stop.is_set():
                 try:
-                    line = reader.readline(MAX_LINE)
+                    line = reader.readline(MAX_LINE_LARGE)
                 except socket.timeout:
                     if not _send_line(sock, conn.lock, {"type": "ping"}):
                         break
@@ -169,6 +172,8 @@ class AgentServer:
                 try:
                     msg = json.loads(line)
                 except json.JSONDecodeError:
+                    continue
+                if not isinstance(msg, dict):
                     continue
                 kind = msg.get("type")
                 if kind == "report":
@@ -181,6 +186,13 @@ class AgentServer:
                         log.exception("bad report from session %s", session_id)
                 elif kind == "ping":
                     _send_line(sock, conn.lock, {"type": "pong"})
+                elif kind == "pong":
+                    continue
+                elif self._on_message is not None:
+                    try:
+                        self._on_message(session_id, msg)
+                    except Exception:  # noqa: BLE001
+                        log.exception("bad %s message from session %s", kind, session_id)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             log.debug("agent connection ended: %s", exc)
         finally:

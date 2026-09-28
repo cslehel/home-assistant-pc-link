@@ -183,17 +183,38 @@ class Telemetry:
                 snap["gpu_temperature"] = gpu.get("temperature")
                 snap["gpu_power"] = gpu.get("power")
         if self.cfg.top_processes > 0:
-            snap["top_processes"] = self._top_processes(self.cfg.top_processes)
+            snap.update(self.top_processes(self.cfg.top_processes))
         return snap
 
-    def _top_processes(self, n: int) -> list[dict[str, Any]]:
-        procs = []
+    def top_processes(self, n: int) -> dict[str, Any]:
+        """Top-N processes by CPU and by memory, grouped by image name.
+
+        psutil reports per-process CPU as "since the last call" for cached
+        Process objects, so the first snapshot after start reads 0 % and every
+        later one covers the telemetry interval - exactly what we want.
+        """
+        groups: dict[str, dict[str, Any]] = {}
+        ncpu = psutil.cpu_count() or 1
         for p in psutil.process_iter(["name", "cpu_percent", "memory_info"]):
             try:
                 info = p.info
-                procs.append({"name": info["name"], "cpu": info["cpu_percent"] or 0.0,
-                              "memory_mb": round((info["memory_info"].rss if info["memory_info"] else 0) / _MB)})
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                name = (info["name"] or "?").lower()
+                g = groups.setdefault(name, {"name": name, "cpu": 0.0, "memory_mb": 0, "count": 0})
+                g["cpu"] += (info["cpu_percent"] or 0.0) / ncpu
+                g["memory_mb"] += (info["memory_info"].rss if info["memory_info"] else 0) / _MB
+                g["count"] += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
-        procs.sort(key=lambda x: x["cpu"], reverse=True)
-        return procs[:n]
+        for g in groups.values():
+            g["cpu"] = round(g["cpu"], 1)
+            g["memory_mb"] = round(g["memory_mb"])
+        by_cpu = sorted(groups.values(), key=lambda x: x["cpu"], reverse=True)[:n]
+        by_mem = sorted(groups.values(), key=lambda x: x["memory_mb"], reverse=True)[:n]
+        return {
+            "top_processes": {"by_cpu": by_cpu, "cpu_count": ncpu},
+            "top_process": by_cpu[0]["name"] if by_cpu else None,
+            "top_process_cpu": by_cpu[0]["cpu"] if by_cpu else None,
+            "top_memory_processes": {"by_memory": by_mem},
+            "top_memory_process": by_mem[0]["name"] if by_mem else None,
+            "top_memory_process_mb": by_mem[0]["memory_mb"] if by_mem else None,
+        }

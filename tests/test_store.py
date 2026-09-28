@@ -62,3 +62,46 @@ def test_purge_removes_old_days():
     s.flush()
     s.purge(retention_days=90, today=today)
     assert s.usage("kevin", old).active == 0
+
+
+def test_rule_usage_and_weekly_range():
+    s = make_store()
+    day = date(2026, 9, 28)
+    s.add_rule("kevin", day, "youtube", 120)
+    s.add_rule("kevin", day, "youtube", 60)
+    s.add_rule("kevin", day, "roblox", 10)
+    assert s.rule_seconds("kevin", day, "youtube") == 180
+    assert s.rule_usage("kevin", day) == {"youtube": 180, "roblox": 10}
+    s.flush()
+    assert s.rule_seconds("kevin", day, "youtube") == 180
+    s.add_usage("kevin", day, active=60)
+    s.add_usage("kevin", day - timedelta(days=1), active=120)
+    s.add_usage("kevin", day - timedelta(days=8), active=999)
+    total = s.usage_range("kevin", day - timedelta(days=6), day)
+    assert total.active == 180
+
+
+def test_purge_removes_dated_settings_of_all_kinds():
+    s = make_store()
+    today = date(2026, 9, 28)
+    old = (today - timedelta(days=200)).isoformat()
+    for key in (f"bonus:{old}", f"limit:{old}", f"rollover:{old}", f"bedtime_ext:{old}", f"reward:homework:{old}", f"earned:{old}"):
+        s.set_setting("kevin", key, 1)
+    s.set_setting("kevin", f"bonus:{today.isoformat()}", 2)
+    s.set_setting("kevin", "focus_until", 12345)
+    s.add_rule("kevin", today - timedelta(days=200), "x", 5)
+    s.flush()
+    s.purge(retention_days=90, today=today)
+    remaining = s.settings_for("kevin")
+    assert set(remaining) == {f"bonus:{today.isoformat()}", "focus_until"}
+    assert s.rule_seconds("kevin", today - timedelta(days=200), "x") == 0
+
+
+def test_recent_events_filters():
+    s = make_store()
+    s.log_event("kevin", "bonus", "+15")
+    s.log_event("sarah", "bonus", "+5")
+    s.log_event("kevin", "logoff", "")
+    assert len(s.recent_events(10)) == 3
+    assert {e["user"] for e in s.recent_events(10, user="kevin")} == {"kevin"}
+    assert [e["kind"] for e in s.recent_events(10, kind="logoff")] == ["logoff"]

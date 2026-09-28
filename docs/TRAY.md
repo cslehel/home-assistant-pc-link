@@ -8,12 +8,17 @@ a smaller footprint and less for antivirus to look at).
 - **Colour = state**
   - green: connected to the service, time remaining;
   - amber: 15 minutes or less remaining;
-  - red: out of time, outside allowed hours, or access paused;
+  - blue: focus / homework mode is on;
+  - red: out of time, outside allowed hours, past bedtime, or access paused;
   - grey: not currently connected to the service.
 - **Tooltip / menu**: the current status line, e.g. "1 h 20 min left today",
-  "No time limit", "Outside allowed hours", "Computer access paused".
+  "No time limit", "Outside allowed hours", "Bedtime", "Computer access
+  paused", "Focus mode (40 min left)".
 - **Balloon notifications**: time-warning countdowns, the grace-period warning
-  before logoff/lock, and any message pushed from Home Assistant.
+  before logoff/lock, break reminders, "this app is not allowed / will be
+  closed" notices from rules and focus mode, bonus-time confirmations, a note
+  when a parent took a screenshot (`screenshots.notify_user`), and any message
+  pushed from Home Assistant.
 
 ## Behaviour
 - Left- or right-click shows the status; clicking "Time remaining" pops the
@@ -22,8 +27,9 @@ a smaller footprint and less for antivirus to look at).
   (see [SECURITY.md](SECURITY.md)); closing or killing the agent does not grant
   time and the service relaunches it.
 - Disable it per PC with `agent.tray_icon: false`, or disable the whole agent
-  with `agent.enabled: false` (activity stats and URL tracking then stop, but
-  time limits and telemetry continue).
+  with `agent.enabled: false` (activity stats, presence signals, URL tracking,
+  rules enforcement, volume and screenshots then stop, but time limits and
+  telemetry continue).
 
 ## Requirements
 `pywin32` (installed via `requirements-windows.txt`). If it is missing the tray

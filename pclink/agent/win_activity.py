@@ -136,53 +136,20 @@ class Win32Activity:
 
 
 class AudioActivity:
-    """True when any session process is actively rendering audio.
+    """True when the session's default output is rendering audio.
 
-    Uses the Core Audio ``IAudioMeterInformation`` peak value through comtypes.
-    Optional: if comtypes/pycaw-style access is not available it always returns
-    False, which only means "audio never keeps an idle session awake".
+    Thin wrapper kept for backwards compatibility; the Core Audio interfaces
+    live in ``pclink/agent/coreaudio.py``.
     """
 
     def __init__(self, enabled: bool = True):
-        self.available = False
-        self._meter = None
-        if not (_IS_WIN and enabled):
-            return
-        try:
-            self._init_meter()
-            self.available = True
-        except Exception as exc:  # noqa: BLE001
-            log.debug("audio metering unavailable: %s", exc)
+        from .coreaudio import CoreAudio
 
-    def _init_meter(self):
-        import comtypes  # type: ignore
-        from comtypes import GUID  # type: ignore
+        self._audio = CoreAudio(enabled)
+        self.available = self._audio.available
 
-        self._comtypes = comtypes
-        self._CLSID_MMDeviceEnumerator = GUID("{BCDE0395-E52F-467C-8E3D-C4579291692E}")
-        self._IID_IMMDeviceEnumerator = GUID("{A95664D2-9614-4F35-A746-DE8DB63617E6}")
-        self._IID_IAudioMeterInformation = GUID("{C02216F6-8C67-4B5B-9D00-D008E73E0064}")
-        self._eRender = 0
-        self._eConsole = 0
-
-    def active(self, threshold: float = 0.0) -> bool:
-        if not self.available:
-            return False
-        try:
-            comtypes = self._comtypes
-            comtypes.CoInitialize()
-            try:
-                enum = comtypes.CoCreateInstance(self._CLSID_MMDeviceEnumerator, interface=None,
-                                                 clsctx=comtypes.CLSCTX_INPROC_SERVER)
-                # Late-bound query: peak meter on the default render endpoint.
-                dev = enum.GetDefaultAudioEndpoint(self._eRender, self._eConsole)  # type: ignore[attr-defined]
-                meter = dev.Activate(self._IID_IAudioMeterInformation, comtypes.CLSCTX_INPROC_SERVER, None)
-                peak = meter.GetPeakValue()  # type: ignore[attr-defined]
-                return float(peak) > threshold
-            finally:
-                comtypes.CoUninitialize()
-        except Exception:  # noqa: BLE001
-            return False
+    def active(self, threshold: float = 0.01) -> bool:
+        return self._audio.active(threshold)
 
 
 def lock_workstation() -> bool:
@@ -191,4 +158,84 @@ def lock_workstation() -> bool:
     try:
         return bool(ctypes.windll.user32.LockWorkStation())
     except Exception:  # noqa: BLE001
+        return False
+
+
+# -- closing things (rules / focus mode / HA "close app") -----------------------------------
+
+_PROTECTED = {"explorer.exe", "winlogon.exe", "csrss.exe", "dwm.exe", "pythonw.exe", "python.exe", "pclink.exe"}
+
+
+def close_process(pid: int = 0, name: str = "") -> int:
+    """Terminate ``pid`` (if its image name still matches) or every process called ``name``.
+
+    The agent runs as the session user, so it can only ever terminate that
+    user's own processes - another seat is never affected.  Returns the count.
+    """
+    if not _IS_WIN:
+        log.info("(dry-run) close process pid=%s name=%s", pid, name)
+        return 0
+    try:
+        import psutil  # type: ignore
+    except Exception:  # noqa: BLE001
+        return 0
+    want = (name or "").lower()
+    if want in _PROTECTED:
+        return 0
+    targets = []
+    if pid > 0:
+        try:
+            p = psutil.Process(pid)
+            if not want or p.name().lower() == want:
+                targets.append(p)
+        except psutil.Error:
+            pass
+    if not targets and want:
+        for p in psutil.process_iter(["name"]):
+            try:
+                if (p.info["name"] or "").lower() == want:
+                    targets.append(p)
+            except psutil.Error:
+                continue
+    count = 0
+    for p in targets:
+        try:
+            p.terminate()
+            count += 1
+        except psutil.AccessDenied:
+            continue  # another user's process (multiseat) - not ours to touch
+        except psutil.Error:
+            continue
+    gone, alive = psutil.wait_procs(targets, timeout=3)
+    for p in alive:
+        try:
+            p.kill()
+        except psutil.Error:
+            pass
+    return count
+
+
+def close_tab(pid: int = 0) -> bool:
+    """Send Ctrl+W to the foreground window (only if it belongs to ``pid``)."""
+    if not _IS_WIN:
+        log.info("(dry-run) close tab pid=%s", pid)
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return False
+        if pid:
+            owner = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+            if int(owner.value) != int(pid):
+                return False  # the user already switched away; do not close something else
+        VK_CONTROL, VK_W, KEYEVENTF_KEYUP = 0x11, 0x57, 0x0002
+        user32.keybd_event(VK_CONTROL, 0, 0, 0)
+        user32.keybd_event(VK_W, 0, 0, 0)
+        user32.keybd_event(VK_W, 0, KEYEVENTF_KEYUP, 0)
+        user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.debug("close tab failed: %s", exc)
         return False
