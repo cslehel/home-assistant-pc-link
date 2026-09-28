@@ -50,16 +50,22 @@ HARDENED_SDDL = (
     "(AU;FA;WPDTDCSD;;;WD)"                   # audit stop/pause/reconfigure/delete by anyone
 )
 
-# The service's default descriptor: everyone who could interact keeps stop rights.
-# Used by ``soften`` so an admin can hand control back before uninstalling.
+# Windows' own default descriptor for a newly created service.  Note that this
+# ALREADY denies interactive/standard users SERVICE_STOP: on Windows only
+# administrators can stop services by default.  Hardening therefore mainly
+# (a) re-asserts that even if something loosened it, (b) adds auditing and
+# (c) turns on auto-restart.  ``soften_acl`` restores exactly this default.
 DEFAULT_SDDL = (
     "D:"
+    "(A;;CCLCSWRPWPDTLOCRRC;;;SY)"
     "(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)"
-    "(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)"
-    "(A;;CCLCSWRPWPDTLOCRRC;;;IU)"
-    "(A;;CCLCSWRPWPDTLOCRRC;;;SU)"
-    "(A;;CCLCSWLOCRRC;;;AU)"
+    "(A;;CCLCSWLOCRRC;;;IU)"
+    "(A;;CCLCSWLOCRRC;;;SU)"
+    "S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)"
 )
+
+# DACL-only variant used when the SACL part cannot be written (needs SeSecurityPrivilege).
+HARDENED_SDDL_DACL_ONLY = HARDENED_SDDL.split("S:")[0]
 
 
 def _sc(*args: str) -> subprocess.CompletedProcess:
@@ -89,8 +95,13 @@ def harden_acl(service_name: str) -> bool:
         return False
     res = _sc("sdset", service_name, HARDENED_SDDL)
     if res.returncode != 0:
-        log.warning("could not harden service ACL: %s %s", res.stdout.strip(), res.stderr.strip())
-        return False
+        # Writing the audit (SACL) part needs SeSecurityPrivilege; fall back to the DACL alone.
+        res = _sc("sdset", service_name, HARDENED_SDDL_DACL_ONLY)
+        if res.returncode != 0:
+            log.warning("could not harden service ACL: %s %s", res.stdout.strip(), res.stderr.strip())
+            return False
+        log.info("service ACL hardened (DACL only; auditing not applied) for %s", service_name)
+        return True
     log.info("service ACL hardened: only administrators can stop or reconfigure %s", service_name)
     return True
 

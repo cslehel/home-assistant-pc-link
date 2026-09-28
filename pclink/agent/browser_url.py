@@ -79,9 +79,7 @@ class BrowserUrlReader:
         return None
 
     def _read_omnibox(self, hwnd: int) -> Optional[str]:
-        uia, UIA = self._uia, self._UIA
-        comtypes = self._comtypes
-        comtypes.CoInitialize()
+        uia = self._uia
         try:
             element = uia.ElementFromHandle(hwnd)
             if not element:
@@ -100,5 +98,6 @@ class BrowserUrlReader:
                 if value and isinstance(value, str) and ("." in value or "/" in value):
                     return value.strip()
             return None
-        finally:
-            comtypes.CoUninitialize()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("UIA read failed: %s", exc)
+            return None

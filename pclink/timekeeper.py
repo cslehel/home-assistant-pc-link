@@ -605,9 +605,11 @@ class TimeKeeper:
         users = set(self._policies) | set(sessions_by_user)
         for user in sorted(users):
             policy = self.policy_for(user)
-            if policy is None:
-                continue
             sessions = sessions_by_user.get(user, [])
+            if policy is None:
+                # Not listed and not managed: still keep "time used" statistics.
+                self._accrue_unmanaged(user, sessions, now_ts, today)
+                continue
             rt = self._runtime.get(user)
             if rt is None or rt.day != today:
                 rt = _Runtime(day=today, block_desired=rt.block_desired if rt else None,
@@ -704,6 +706,18 @@ class TimeKeeper:
     def _grace_title(st: TimeStatus) -> str:
         return {"bedtime": "Bedtime", "hours": "Outside allowed hours", "manual": "Access paused",
                 "weekly": "Weekly time is up"}.get(st.limiting_factor or "", "Time is up")
+
+    def _accrue_unmanaged(self, user: str, sessions: list[SessionInfo], now_ts: float, today: date) -> None:
+        rt = self._runtime.get(user)
+        if rt is None or rt.day != today:
+            rt = _Runtime(day=today, last_tick=rt.last_tick if rt else None)
+            self._runtime[user] = rt
+        dt = 0.0
+        if rt.last_tick is not None:
+            dt = max(0.0, min(now_ts - rt.last_tick, 120.0))
+        rt.last_tick = now_ts
+        if dt > 0 and any(s.state == "active" and not s.locked for s in sessions):
+            self.store.add_usage(user, today, active=dt)
 
     def _grace_message(self, policy: UserPolicy, st: TimeStatus) -> str:
         what = {"logoff": "logged off", "lock": "locked", "shutdown": "shut down"}[policy.action]

@@ -1,11 +1,46 @@
 # Home Assistant integration
 
-The service uses **MQTT discovery**, so entities appear automatically once the
-service connects to your broker. No Home Assistant YAML is required.
+## Nothing is installed *into* Home Assistant
 
-Requirements: the **MQTT integration** configured in Home Assistant and an MQTT
-broker (the *Mosquitto broker* add-on is the usual choice). Point `mqtt.host`
-in the config at the broker and set credentials.
+The service runs on the **Windows PC** and talks to Home Assistant over
+**MQTT** using MQTT *discovery*. There is no custom component, HACS entry or
+add-on to install: once the service connects to your broker, a new **device**
+with all its entities appears in Home Assistant by itself.
+
+## Home Assistant side: one-time setup (about 5 minutes)
+
+1. **Install an MQTT broker** (skip if you already have one).
+   Settings → Add-ons → Add-on store → **Mosquitto broker** → Install → Start
+   (enable *Start on boot*).
+2. **Create a login for the PC.**
+   Settings → People → Users → **Add user**, e.g. username `pclink` with a
+   strong password. Untick *Can only log in from the local network* is not
+   needed; leave *Administrator* **off**. Mosquitto accepts Home Assistant
+   users as MQTT credentials.
+3. **Add the MQTT integration.**
+   Settings → Devices & services → **Add integration** → *MQTT*. With the
+   Mosquitto add-on it is discovered automatically; accept the defaults
+   (broker `core-mosquitto`, discovery **on**, prefix `homeassistant`).
+4. **Point the PC at it.** In `%ProgramData%\PCLink\config.yaml` on the PC:
+   ```yaml
+   mqtt:
+     host: 192.168.1.10        # your Home Assistant IP or hostname
+     port: 1883
+     username: pclink
+     password: <the password from step 2>
+     discovery_prefix: homeassistant
+   ```
+   Test it from the PC: `python -m pclink test-mqtt`.
+5. **Start the service** (`python -m pclink run` to try, then
+   `python -m pclink install` + `start`).
+6. **Find the device.** Settings → Devices & services → **MQTT** → *devices*:
+   a device named after your PC lists every sensor, switch, number and button.
+   Add them to a dashboard like any other entity.
+
+If nothing appears: check the service log in `%ProgramData%\PCLink\logs`,
+confirm the broker port (1883) is reachable from the PC, and in Home Assistant
+open Settings → Devices & services → MQTT → *Configure* → **Listen to a topic**
+and subscribe to `pclink/#` to see whether messages arrive.
 
 Everything is grouped under one HA **device** named after the PC. Its entities:
 

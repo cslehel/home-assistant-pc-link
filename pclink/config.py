@@ -327,7 +327,7 @@ class TimeLimitsConfig:
     tick_seconds: float = 5.0
     block_method: str = "logon_hours"  # logon_hours | disable_account | logoff_only
     manage_unknown_users: bool = False
-    unblock_on_stop: bool = True
+    unblock_on_stop: bool = False  # keep blocks across restarts/reboots; 'remove' always unblocks
     reassert_block_seconds: float = 300.0
     week_start: str = "mon"
     shared_budget: bool = False        # count this user's time on *other* PCs too (needs fleet.enabled)

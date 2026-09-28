@@ -101,8 +101,26 @@ if sys.platform == "win32":
         if "install" in argv and "--startup" not in argv:
             argv = ["--startup", "auto"] + argv
 
-        # Before removing a hardened service, restore the ACL so the SCM can delete it.
+        # Before removing: stop the service, restore logon rights for every managed
+        # user (so nobody stays locked out once enforcement is gone) and restore the
+        # default ACL so the SCM can delete the service.
         if "remove" in argv:
+            try:
+                win32serviceutil.StopService(name)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                from .config import Config
+                from .logonblock import make_blocker
+
+                cfg = Config.load(default_config_path())
+                blocker = make_blocker(cfg.time_limits.block_method)
+                for policy in cfg.time_limits.users:
+                    if not policy.unlimited:
+                        blocker.unblock(policy.name)
+                print("restored logon rights for managed users")
+            except Exception as exc:  # noqa: BLE001
+                print(f"note: could not restore logon rights automatically ({exc}); run 'python -m pclink unblock-all'")
             try:
                 hardening.soften_acl(name)
             except Exception:  # noqa: BLE001

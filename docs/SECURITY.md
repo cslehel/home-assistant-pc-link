@@ -34,6 +34,11 @@ products use, applied automatically at `python -m pclink install`:
    LocalSystem keep full control. Attempts to stop/reconfigure/delete are
    audited (SACL). See `pclink/hardening.py` (`HARDENED_SDDL`).
 
+   Worth knowing: Windows' *default* service permissions already deny
+   standard users the right to stop services. Hardening re-asserts this
+   explicitly (in case another tool loosened it), adds auditing, and is what
+   makes the auto-restart below meaningful.
+
 2. **Automatic restart on failure.** If the process is killed (which requires
    admin rights anyway) or crashes, the Service Control Manager restarts it
    after 5 seconds. See `set_recovery()`.

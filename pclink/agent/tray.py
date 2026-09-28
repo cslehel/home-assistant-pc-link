@@ -137,50 +137,68 @@ class TrayIcon:
     def _icon_handle(self, state: str):
         if state in self._icons:
             return self._icons[state]
-        handle = self._make_icon(STATE_COLORS.get(state, STATE_COLORS["offline"]))
+        try:
+            handle = self._make_icon(STATE_COLORS.get(state, STATE_COLORS["offline"]))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("custom tray icon failed (%s); using stock icon", exc)
+            import win32con
+            import win32gui
+
+            handle = win32gui.LoadIcon(0, win32con.IDI_APPLICATION)
         self._icons[state] = handle
         return handle
 
     def _make_icon(self, rgb):
-        """Draw a small filled circle as the tray icon (no external .ico needed)."""
+        """Draw a small filled circle as the tray icon (pure GDI, no .ico file)."""
         import win32con
         import win32gui
-        import win32ui
 
-        width = height = 16
+        size = 16
         r, g, b = rgb
         colour = win32api_rgb(r, g, b)
-        hdc = win32gui.GetDC(0)
-        dc = win32ui.CreateDCFromHandle(hdc)
-        mem_dc = dc.CreateCompatibleDC()
-        bmp = win32ui.CreateBitmap()
-        bmp.CreateCompatibleBitmap(dc, width, height)
-        mem_dc.SelectObject(bmp)
-        mem_dc.FillSolidRect((0, 0, width, height), win32api_rgb(0, 0, 0))
-        brush = win32gui.CreateSolidBrush(colour)
-        pen = win32gui.CreatePen(win32con.PS_SOLID, 1, colour)
-        old_brush = win32gui.SelectObject(mem_dc.GetSafeHdc(), brush)
-        old_pen = win32gui.SelectObject(mem_dc.GetSafeHdc(), pen)
-        win32gui.Ellipse(mem_dc.GetSafeHdc(), 1, 1, width - 1, height - 1)
-        win32gui.SelectObject(mem_dc.GetSafeHdc(), old_brush)
-        win32gui.SelectObject(mem_dc.GetSafeHdc(), old_pen)
-        win32gui.DeleteObject(brush)
-        win32gui.DeleteObject(pen)
-        # build the HICON via a mask
-        info = self._make_icon_info(bmp, width, height)
-        hicon = win32gui.CreateIconIndirect(info)
-        win32gui.ReleaseDC(0, hdc)
-        mem_dc.DeleteDC()
-        dc.DeleteDC()
-        return hicon
-
-    def _make_icon_info(self, colour_bmp, width, height):
-        import win32gui
-        import win32ui
-
-        mask = win32ui.CreateBitmap()
-        mask.CreateCompatibleBitmap(win32ui.CreateDCFromHandle(win32gui.GetDC(0)), width, height)
-        return (True, 0, 0, mask.GetHandle(), colour_bmp.GetHandle())
+        screen = win32gui.GetDC(0)
+        colour_dc = mask_dc = None
+        colour_bmp = mask_bmp = None
+        try:
+            # colour plane ------------------------------------------------------
+            colour_dc = win32gui.CreateCompatibleDC(screen)
+            colour_bmp = win32gui.CreateCompatibleBitmap(screen, size, size)
+            old_bmp = win32gui.SelectObject(colour_dc, colour_bmp)
+            black = win32gui.GetStockObject(win32con.BLACK_BRUSH)
+            win32gui.FillRect(colour_dc, (0, 0, size, size), black)
+            brush = win32gui.CreateSolidBrush(colour)
+            pen = win32gui.CreatePen(win32con.PS_SOLID, 1, colour)
+            old_brush = win32gui.SelectObject(colour_dc, brush)
+            old_pen = win32gui.SelectObject(colour_dc, pen)
+            win32gui.Ellipse(colour_dc, 1, 1, size - 1, size - 1)
+            win32gui.SelectObject(colour_dc, old_brush)
+            win32gui.SelectObject(colour_dc, old_pen)
+            win32gui.DeleteObject(brush)
+            win32gui.DeleteObject(pen)
+            win32gui.SelectObject(colour_dc, old_bmp)
+            # mask plane: 1 = transparent, 0 = opaque --------------------------
+            mask_dc = win32gui.CreateCompatibleDC(screen)
+            mask_bmp = win32gui.CreateBitmap(size, size, 1, 1, None)
+            old_mask = win32gui.SelectObject(mask_dc, mask_bmp)
+            white = win32gui.GetStockObject(win32con.WHITE_BRUSH)
+            win32gui.FillRect(mask_dc, (0, 0, size, size), white)
+            black_pen = win32gui.GetStockObject(win32con.BLACK_PEN)
+            old_b2 = win32gui.SelectObject(mask_dc, black)
+            old_p2 = win32gui.SelectObject(mask_dc, black_pen)
+            win32gui.Ellipse(mask_dc, 1, 1, size - 1, size - 1)
+            win32gui.SelectObject(mask_dc, old_b2)
+            win32gui.SelectObject(mask_dc, old_p2)
+            win32gui.SelectObject(mask_dc, old_mask)
+            # ICONINFO: (fIcon, xHotspot, yHotspot, hbmMask, hbmColor)
+            return win32gui.CreateIconIndirect((True, 0, 0, mask_bmp, colour_bmp))
+        finally:
+            for dc in (colour_dc, mask_dc):
+                if dc:
+                    win32gui.DeleteDC(dc)
+            for bmp in (colour_bmp, mask_bmp):
+                if bmp:
+                    win32gui.DeleteObject(bmp)
+            win32gui.ReleaseDC(0, screen)
 
     def _add_icon(self) -> None:
         import win32gui

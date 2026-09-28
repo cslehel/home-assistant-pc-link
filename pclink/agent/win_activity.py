@@ -27,6 +27,7 @@ class Win32Activity:
     def __init__(self):
         self._psutil = None
         self._proc_cache: dict[int, tuple[str, str]] = {}
+        self.last_hwnd: int = 0
         if _IS_WIN:
             self._user32 = ctypes.windll.user32
             self._kernel32 = ctypes.windll.kernel32
@@ -72,6 +73,7 @@ class Win32Activity:
         if not _IS_WIN:
             return None
         hwnd = self._user32.GetForegroundWindow()
+        self.last_hwnd = int(hwnd or 0)
         if not hwnd:
             return None
         length = self._user32.GetWindowTextLengthW(hwnd)
@@ -136,20 +138,102 @@ class Win32Activity:
 
 
 class AudioActivity:
-    """True when the session's default output is rendering audio.
+    """True when the session's default playback device is actively rendering audio.
 
-    Thin wrapper kept for backwards compatibility; the Core Audio interfaces
-    live in ``pclink/agent/coreaudio.py``.
+    Uses Core Audio's ``IAudioMeterInformation`` peak meter through comtypes -- a
+    single read-only COM call per poll, no per-process enumeration.  Optional: if
+    comtypes is unavailable it always returns False, which only means that audio
+    playback will not keep an otherwise idle session counted as active.
+
+    The COM objects are created lazily on the thread that first calls ``active()``
+    so they live in that thread's COM apartment.
     """
 
     def __init__(self, enabled: bool = True):
-        from .coreaudio import CoreAudio
+        self.available = _IS_WIN and enabled
+        self._meter = None
+        self._failures = 0
+        if self.available:
+            try:
+                import comtypes  # noqa: F401  # fail fast if missing
+            except Exception as exc:  # noqa: BLE001
+                log.debug("audio metering unavailable (comtypes missing): %s", exc)
+                self.available = False
 
-        self._audio = CoreAudio(enabled)
-        self.available = self._audio.available
+    def _define_interfaces(self):
+        from ctypes import POINTER, c_float, c_uint, c_wchar_p
+        from ctypes.wintypes import DWORD
+
+        from comtypes import COMMETHOD, GUID, HRESULT, IUnknown
+
+        class IAudioMeterInformation(IUnknown):
+            _iid_ = GUID("{C02216F6-8C67-4B5B-9D00-D008E73E0064}")
+            _methods_ = (
+                COMMETHOD([], HRESULT, "GetPeakValue", (["out"], POINTER(c_float), "pfPeak")),
+                COMMETHOD([], HRESULT, "GetMeteringChannelCount", (["out"], POINTER(c_uint), "pnChannelCount")),
+                COMMETHOD([], HRESULT, "GetChannelsPeakValues", (["in"], c_uint, "u32ChannelCount"),
+                          (["in"], POINTER(c_float), "afPeakValues")),
+                COMMETHOD([], HRESULT, "QueryHardwareSupport", (["out"], POINTER(DWORD), "pdwHardwareSupportMask")),
+            )
+
+        class IMMDevice(IUnknown):
+            _iid_ = GUID("{D666063F-1587-4E43-81F1-B948E807363F}")
+            _methods_ = (
+                COMMETHOD([], HRESULT, "Activate", (["in"], POINTER(GUID), "iid"), (["in"], DWORD, "dwClsCtx"),
+                          (["in"], POINTER(DWORD), "pActivationParams"),
+                          (["out"], POINTER(POINTER(IUnknown)), "ppInterface")),
+                COMMETHOD([], HRESULT, "OpenPropertyStore", (["in"], DWORD, "stgmAccess"),
+                          (["out"], POINTER(POINTER(IUnknown)), "ppProperties")),
+                COMMETHOD([], HRESULT, "GetId", (["out"], POINTER(c_wchar_p), "ppstrId")),
+                COMMETHOD([], HRESULT, "GetState", (["out"], POINTER(DWORD), "pdwState")),
+            )
+
+        class IMMDeviceEnumerator(IUnknown):
+            _iid_ = GUID("{A95664D2-9614-4F35-A746-DE8DB63617E6}")
+            _methods_ = (
+                COMMETHOD([], HRESULT, "EnumAudioEndpoints", (["in"], DWORD, "dataFlow"), (["in"], DWORD, "dwStateMask"),
+                          (["out"], POINTER(POINTER(IUnknown)), "ppDevices")),
+                COMMETHOD([], HRESULT, "GetDefaultAudioEndpoint", (["in"], DWORD, "dataFlow"), (["in"], DWORD, "role"),
+                          (["out"], POINTER(POINTER(IMMDevice)), "ppEndpoint")),
+                COMMETHOD([], HRESULT, "GetDevice", (["in"], c_wchar_p, "pwstrId"),
+                          (["out"], POINTER(POINTER(IMMDevice)), "ppDevice")),
+                COMMETHOD([], HRESULT, "RegisterEndpointNotificationCallback", (["in"], POINTER(IUnknown), "pClient")),
+                COMMETHOD([], HRESULT, "UnregisterEndpointNotificationCallback", (["in"], POINTER(IUnknown), "pClient")),
+            )
+
+        self._IMMDeviceEnumerator = IMMDeviceEnumerator
+        self._IAudioMeterInformation = IAudioMeterInformation
+        self._CLSID_MMDeviceEnumerator = GUID("{BCDE0395-E52F-467C-8E3D-C4579291692E}")
+
+    def _create_meter(self):
+        import comtypes
+
+        if not hasattr(self, "_IMMDeviceEnumerator"):
+            self._define_interfaces()
+        enumerator = comtypes.CoCreateInstance(self._CLSID_MMDeviceEnumerator, interface=self._IMMDeviceEnumerator,
+                                               clsctx=comtypes.CLSCTX_INPROC_SERVER)
+        device = enumerator.GetDefaultAudioEndpoint(0, 0)  # eRender, eConsole
+        unknown = device.Activate(self._IAudioMeterInformation._iid_, comtypes.CLSCTX_INPROC_SERVER, None)
+        return unknown.QueryInterface(self._IAudioMeterInformation)
 
     def active(self, threshold: float = 0.01) -> bool:
-        return self._audio.active(threshold)
+        if not self.available:
+            return False
+        try:
+            if self._meter is None:
+                self._meter = self._create_meter()
+            peak = float(self._meter.GetPeakValue())
+            self._failures = 0
+            return peak > threshold
+        except Exception as exc:  # noqa: BLE001
+            # default device changed / unplugged: rebuild next time, give up after many failures
+            self._meter = None
+            self._failures += 1
+            if self._failures in (1, 20):
+                log.debug("audio meter read failed (%d): %s", self._failures, exc)
+            if self._failures > 200:
+                self.available = False
+            return False
 
 
 def lock_workstation() -> bool:

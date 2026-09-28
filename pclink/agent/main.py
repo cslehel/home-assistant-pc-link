@@ -128,7 +128,7 @@ class Agent:
         url = domain = None
         if fg is not None and self.urls is not None and fg.name and fg.name.lower() in self.browsers:
             try:
-                url, domain = self.urls.url_and_domain(fg.pid and self._fg_hwnd(), fg.title)
+                url, domain = self.urls.url_and_domain(self.activity.last_hwnd, fg.title)
             except Exception:  # noqa: BLE001
                 url = domain = None
         if now - self._last_audio_poll >= self.audio_poll:
@@ -162,14 +162,6 @@ class Agent:
                 self._last_report = time.time()
                 self._last_signature = signature
         self._update_tray_connection()
-
-    def _fg_hwnd(self) -> int:
-        try:
-            import ctypes
-
-            return int(ctypes.windll.user32.GetForegroundWindow())
-        except Exception:  # noqa: BLE001
-            return 0
 
     # -- tray ----------------------------------------------------------------
     def _update_tray_connection(self) -> None:
