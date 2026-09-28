@@ -95,30 +95,32 @@ class LogonBlocker:
         return True
 
     def _set_hours(self, user: str, blocked: bool) -> bool:
-        target = _HOURS_NONE if blocked else _HOURS_ALL
+        """Set the permitted logon hours to none (blocked) or all.
+
+        Written through ``net user <name> /times:`` (blank = never, ``all`` =
+        always).  pywin32's NetUserSetInfo does not support the logon-hours
+        level (1020), so net.exe is the supported way; its arguments are the
+        same on every Windows language.  Reading still uses NetUserGetInfo.
+        """
         current = self.is_blocked(user)
         if current is not None and current == blocked:
             return True
-        errors = []
-        for payload in (target, target.decode("latin-1")):
-            try:
-                self._net.NetUserSetInfo(None, user, 1020, {"units_per_week": 168, "logon_hours": payload})
-                if self.is_blocked(user) == blocked:
-                    log.info("logon hours for %s set to %s", user, "none (blocked)" if blocked else "all")
-                    return True
-            except Exception as exc:  # noqa: BLE001
-                errors.append(str(exc))
-        # Fallback: net.exe understands /times: (blank = never) and /times:all
         net_exe = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "net.exe")
         arg = "/times:" if blocked else "/times:all"
         creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        result = subprocess.run([net_exe, "user", user, arg], capture_output=True, text=True, timeout=20, creationflags=creation)
-        if result.returncode == 0:
-            log.info("logon hours for %s set via net.exe (%s)", user, arg)
-            return True
-        log.error("net.exe failed for %s: rc=%s %s %s (NetUserSetInfo errors: %s)", user, result.returncode,
-                  result.stdout.strip(), result.stderr.strip(), "; ".join(errors))
-        return False
+        try:
+            result = subprocess.run([net_exe, "user", user, arg], capture_output=True, text=True, timeout=20,
+                                    creationflags=creation)
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.error("could not run net.exe for %s: %s", user, exc)
+            return False
+        if result.returncode != 0:
+            detail = " ".join((result.stdout + " " + result.stderr).split())
+            log.error("could not %s %s: net.exe exit code %s: %s", "block" if blocked else "unblock", user,
+                      result.returncode, detail)
+            return False
+        log.info("logon hours for %s set to %s", user, "none (blocked)" if blocked else "all")
+        return True
 
 
 def _as_bytes(value) -> Optional[bytes]:

@@ -122,11 +122,31 @@ jobs:
           $agent = Start-Process -FilePath "$dir\pclink-agent.exe" -PassThru -Wait
           if ($agent.ExitCode -ne 2) { throw "pclink-agent.exe exited with $($agent.ExitCode), expected 2" }
 
-      - name: Install, run and uninstall the service
+      - name: Install, run and uninstall the service (with a real login block)
         run: |
           $dir = "$env:RUNNER_TEMP\extract\PCLink"
-          & "$dir\pclink.exe" init-config          # the installer stops for editing when no config exists yet
-          if ($LASTEXITCODE) { throw "init-config failed" }
+
+          # A throw-away local account with a zero-minute limit: the service must block its logins.
+          $user = "pclinktest"
+          $password = "Pc!" + [guid]::NewGuid().ToString("N") + "Aa1"
+          net.exe user $user $password /add | Out-Null
+          if ($LASTEXITCODE) { throw "could not create the test account" }
+          function Get-LogonHours {
+            $line = net.exe user $user | Where-Object { $_ -match '^Logon hours allowed' }
+            return ($line -replace '^Logon hours allowed\s+', '').Trim()
+          }
+          if ((Get-LogonHours) -ne "All") { throw "the new test account should start with logon hours 'All'" }
+
+          New-Item -ItemType Directory -Force -Path "$env:ProgramData\PCLink" | Out-Null
+          @"
+          mqtt:
+            enabled: false
+          time_limits:
+            block_method: logon_hours
+            users:
+              - name: $user
+                daily_limit_minutes: 0
+          "@ | Set-Content -Encoding utf8 "$env:ProgramData\PCLink\config.yaml"
 
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$dir\install.ps1" -NoPause
           if ($LASTEXITCODE) { throw "install.ps1 failed with exit code $LASTEXITCODE" }
@@ -137,9 +157,14 @@ jobs:
           if ($svc.PathName -notlike '*\Program Files\PCLink\pclink.exe*service') { throw "unexpected service binary path" }
           if ($svc.StartMode -ne "Auto") { throw "start mode is $($svc.StartMode), expected Auto" }
 
-          Start-Sleep -Seconds 20
+          for ($i = 0; $i -lt 30 -and (Get-LogonHours) -ne "None"; $i++) { Start-Sleep -Seconds 1 }
+          $hours = Get-LogonHours
+          Write-Host "Logon hours of $user while out of time: $hours"
+          if ($hours -ne "None") { throw "the service did not block the out-of-time account (logon hours: $hours)" }
+
+          Start-Sleep -Seconds 15
           $state = (Get-Service PCLink).Status
-          if ($state -ne "Running") { throw "the service is '$state' 20 s after starting" }
+          if ($state -ne "Running") { throw "the service is '$state' after running for a while" }
 
           $sd = (sc.exe sdshow PCLink) -join ""
           Write-Host "Service security descriptor: $sd"
@@ -154,7 +179,12 @@ jobs:
           for ($i = 0; $i -lt 30 -and (Get-CimInstance Win32_Service -Filter "Name='PCLink'"); $i++) { Start-Sleep -Seconds 1 }
           if (Get-CimInstance Win32_Service -Filter "Name='PCLink'") { throw "the service is still registered after uninstalling" }
           if (Test-Path "$env:ProgramFiles\PCLink") { throw "the program folder is still present after uninstalling" }
-          Write-Host "Install / run / uninstall cycle passed."
+
+          $hours = Get-LogonHours
+          Write-Host "Logon hours of $user after uninstalling: $hours"
+          if ($hours -ne "All") { throw "uninstalling did not give the account its logon hours back ($hours)" }
+          net.exe user $user /delete | Out-Null
+          Write-Host "Install / block / run / uninstall / unblock cycle passed."
 
       - name: Show logs
         if: failure()
