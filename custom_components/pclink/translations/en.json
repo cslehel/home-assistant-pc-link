@@ -604,7 +604,7 @@
         },
         "data": {
           "name": "Command",
-          "description": "The JSON object, e.g. {\"action\": \"add_minutes\", \"user\": \"kevin\", \"minutes\": 20}."
+          "description": "The command as a JSON object with an action key plus its fields, for example action add_minutes with user kevin and minutes 20."
         },
         "pin": {
           "name": "Parent PIN",

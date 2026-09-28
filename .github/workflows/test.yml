@@ -55,6 +55,10 @@ jobs:
 
   hacs:
     name: HACS validation
+    # HACS only works with public repositories: it reads manifest.json and
+    # hacs.json anonymously, so on a private repo every check fails. The job
+    # runs again automatically once the repository is made public.
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
