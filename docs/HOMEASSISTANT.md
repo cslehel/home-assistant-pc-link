@@ -1,22 +1,155 @@
 # Home Assistant integration
 
-## Nothing is installed *into* Home Assistant
+There are two ways to connect a PC to Home Assistant. Pick one per PC.
 
-The service runs on the **Windows PC** and talks to Home Assistant over
-**MQTT** using MQTT *discovery*. There is no custom component, HACS entry or
-add-on to install: once the service connects to your broker, a new **device**
-with all its entities appears in Home Assistant by itself.
+| | **PC Link integration** (recommended) | **MQTT discovery** (classic) |
+|---|---|---|
+| Installed in Home Assistant | yes: a HACS custom integration with a UI setup flow | nothing (uses the MQTT integration) |
+| Needs an MQTT broker | no | yes (Mosquitto add-on) |
+| Transport | the PC's local API: WebSocket push + REST | MQTT |
+| Discovery | the PC is found on the LAN automatically (mDNS) | entities appear via MQTT discovery |
+| Actions (`pclink.add_minutes`, `pclink.focus`, ...) | yes, with proper fields and a device picker | no (JSON to a command topic) |
+| Device triggers ("Kevin ran out of time") | yes | yes |
+| Multi-PC roll-up device / shared budgets across PCs | needs MQTT between the PCs (see below) | yes |
 
-## Home Assistant side: one-time setup (about 5 minutes)
+Both produce the same **device** with the same entities and the same events;
+the entity list further down applies to either.
+
+---
+
+## Option A: the PC Link integration
+
+### 1. On the PC: enable the local API
+
+```powershell
+python -m pclink api-token
+```
+
+prints a fresh token and the block to paste into `%ProgramData%\PCLink\config.yaml`:
+
+```yaml
+api:
+  enabled: true
+  host: 0.0.0.0          # reachable from Home Assistant
+  port: 47392
+  token: <the generated token>
+```
+
+Then restart the service (`python -m pclink restart`) and allow the port
+through the Windows firewall (elevated PowerShell):
+
+```powershell
+New-NetFirewallRule -DisplayName "PC Link API" -Direction Inbound -Protocol TCP -LocalPort 47392 -Action Allow -Profile Private
+```
+
+If you do **not** also want MQTT, set `mqtt: {enabled: false}` (no broker is
+contacted at all). If you keep MQTT for other PCs, set `mqtt: {discovery: false}`
+so the same entities are not created twice.
+
+### 2. In Home Assistant: install the integration
+
+**HACS:** HACS → Integrations → ⋮ → *Custom repositories* → add
+`https://github.com/cslehel/home-assistant-pc-link` as *Integration* → install
+**PC Link** → restart Home Assistant.
+
+**Manual:** copy `custom_components/pclink/` from this repository into your
+Home Assistant `config/custom_components/` folder and restart.
+
+### 3. Add the PC
+
+Settings → Devices & services. If the PC is on the same network it is already
+listed as **Discovered** (the service announces itself with mDNS): click
+*Configure*, enter the token, done. Otherwise *Add integration* → **PC Link**,
+enter the PC's IP address or host name, the port and the token.
+
+A device named after the PC appears with every entity; new users, rules,
+apps or hardware sensors you add to `config.yaml` later show up by themselves
+after the PC reloads its configuration (no restart of Home Assistant).
+
+Token changed on the PC? Home Assistant asks for the new one
+(*Reconfigure* also lets you change the address).
+
+### Actions
+
+Every command is an action with a device picker (`device_id` may be omitted
+when only one PC is configured) and an optional `pin` field for the parent PIN:
+
+| Action | Fields |
+|---|---|
+| `pclink.add_minutes` | `user`, `minutes` |
+| `pclink.earn` | `user`, `minutes`, `reason` |
+| `pclink.reward` | `user`, `name` |
+| `pclink.set_limit` | `user`, `scope` (today / weekday / weekend / weekly), `minutes` (empty = unlimited) |
+| `pclink.clear_overrides` | `user` |
+| `pclink.block` / `pclink.unblock` | `user` |
+| `pclink.focus` / `pclink.focus_off` | `user`, `minutes`, `allow` |
+| `pclink.extend_bedtime` | `user`, `minutes` |
+| `pclink.rule_enabled` / `pclink.rule_limit` | `user`, `rule`, `enabled` / `minutes` |
+| `pclink.breaks` | `user`, `enabled` |
+| `pclink.notify` | `message`, `title`, `user`, `level` |
+| `pclink.logoff` / `pclink.lock` | `user` (optional) |
+| `pclink.volume` | `user`, `level`, `muted` |
+| `pclink.screenshot` | `user` |
+| `pclink.launch` / `pclink.close_app` | `name` or `command` / `process`, `user` |
+| `pclink.power` | `action` (shutdown / reboot / sleep / hibernate / cancel_shutdown), `delay`, `message` |
+| `pclink.wake_on_lan` | `mac`, `broadcast`, `port` |
+| `pclink.pin` / `pclink.pin_lock` | `pin` |
+| `pclink.parent_present` | `present` |
+| `pclink.reload_config` | |
+| `pclink.command` | `data`: any JSON command from the table at the end of this page (returns the PC's response) |
+
+```yaml
+# Grant Kevin 20 more minutes (PIN inline when one is configured)
+action: pclink.add_minutes
+data:
+  user: kevin
+  minutes: 20
+  pin: "1234"
+```
+
+A refused action (for example "parent pin required") fails with that message,
+so it is visible in the automation trace or the UI.
+
+### Events
+
+Every event the PC reports is fired on the bus as `pclink_event` with
+`device_id`, `pc_id`, `pc_name`, `event` and, for user events, `user`
+(plus event-specific fields such as `minutes` or `reward`). The **device
+triggers** below are built on these.
+
+### Switching from MQTT discovery
+
+Entity ids follow the same pattern (`sensor.<pc>_<user>_time_remaining`), but
+the integration's entities are new registry entries, so dashboard cards and
+automations that reference entity ids keep working while customised names,
+areas and long-term statistics of the old MQTT entities do not carry over.
+Set `mqtt: {discovery: false}` (or `enabled: false`) on the PC and remove the
+old MQTT device in Home Assistant once the new one is in place.
+
+### Several PCs
+
+Add each PC as its own integration entry. Shared budgets and the virtual
+*"PC Link (all PCs)"* device are computed by the PCs themselves over MQTT, so
+for those keep `mqtt.enabled: true` (with `mqtt.discovery: false`) on every PC.
+Everything else works without a broker.
+
+---
+
+## Option B: MQTT discovery
+
+The service talks to Home Assistant over **MQTT** using MQTT *discovery*; once
+it connects to your broker, a new **device** with all its entities appears in
+Home Assistant by itself.
+
+One-time setup on the Home Assistant side (about 5 minutes):
 
 1. **Install an MQTT broker** (skip if you already have one).
    Settings → Add-ons → Add-on store → **Mosquitto broker** → Install → Start
    (enable *Start on boot*).
 2. **Create a login for the PC.**
    Settings → People → Users → **Add user**, e.g. username `pclink` with a
-   strong password. Untick *Can only log in from the local network* is not
-   needed; leave *Administrator* **off**. Mosquitto accepts Home Assistant
-   users as MQTT credentials.
+   strong password; leave *Administrator* **off**. Mosquitto accepts Home
+   Assistant users as MQTT credentials.
 3. **Add the MQTT integration.**
    Settings → Devices & services → **Add integration** → *MQTT*. With the
    Mosquitto add-on it is discovered automatically; accept the defaults
@@ -35,12 +168,15 @@ with all its entities appears in Home Assistant by itself.
    `python -m pclink install` + `start`).
 6. **Find the device.** Settings → Devices & services → **MQTT** → *devices*:
    a device named after your PC lists every sensor, switch, number and button.
-   Add them to a dashboard like any other entity.
 
 If nothing appears: check the service log in `%ProgramData%\PCLink\logs`,
 confirm the broker port (1883) is reachable from the PC, and in Home Assistant
 open Settings → Devices & services → MQTT → *Configure* → **Listen to a topic**
 and subscribe to `pclink/#` to see whether messages arrive.
+
+---
+
+## Entities
 
 Everything is grouped under one HA **device** named after the PC. Its entities:
 
@@ -145,10 +281,11 @@ weekly limits span all of them.
 - rule sensors carry used / limit / remaining minutes and whether the rule is
   active right now.
 
-## Free-form command topic
+## Free-form JSON commands
 
-Anything not exposed as an entity can be sent as JSON to
-`pclink/<device_id>/cmd` (or `POST /api/command`, see [API.md](API.md)):
+Anything not exposed as an entity can be sent as JSON: with the integration
+through the `pclink.command` action, over MQTT to `pclink/<device_id>/cmd`, or
+with `POST /api/command` (see [API.md](API.md)):
 
 ```yaml
 # Grant Kevin 20 more minutes today (PIN inline when one is configured)
@@ -184,6 +321,7 @@ Supported actions:
 | `check_updates`, `install_updates` | | Windows Update |
 | `run` | `name` | custom command |
 | `reload`, `refresh` | | reload config / republish discovery |
+| `set` | `entity`, `value` | any entity command by its key, e.g. `{"action":"set","entity":"user_kevin_blocked","value":"ON"}` |
 
 ## Example: notify when a child runs low
 

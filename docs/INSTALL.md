@@ -3,8 +3,10 @@
 ## Requirements
 - Windows 10 or 11.
 - Python 3.9+ (3.11+ recommended), installed **for all users**.
-- An MQTT broker reachable from the PC (typically the Mosquitto add-on on your
-  Home Assistant host) and the MQTT integration enabled in Home Assistant.
+- Either the **PC Link integration** in Home Assistant (talks to the PC's local
+  API; no broker) **or** an MQTT broker reachable from the PC (typically the
+  Mosquitto add-on) with the MQTT integration enabled. See
+  [HOMEASSISTANT.md](HOMEASSISTANT.md).
 - Optional: [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
   for CPU/GPU/motherboard temperatures and fan speeds.
 - Optional: `nvidia-ml-py` (in `requirements-windows.txt`) for NVIDIA GPU stats.
@@ -39,11 +41,24 @@ Or run `scripts\install-service.ps1` which does the whole sequence.
 | `python -m pclink pin-hash 1234` | print a `parent_pin_sha256` value for the config |
 | `python -m pclink unblock-all` | emergency: restore logon rights for all managed users |
 | `python -m pclink test-mqtt` | verify broker connectivity |
+| `python -m pclink api-token` | print a random API token + the `api:` block for the Home Assistant integration |
 
 Configuration changes are picked up automatically (hot reload); only `mqtt`,
 `storage`, `logging`, the agent's IPC port and the `api` section need a
 restart. With `api.enabled: true` a local status/setup page is available at
 `http://127.0.0.1:47392/` (see [API.md](API.md)).
+
+## Firewall (Home Assistant integration)
+
+The integration connects to the PC on `api.port` (47392). Allow it once, from
+an elevated PowerShell prompt:
+
+```powershell
+New-NetFirewallRule -DisplayName "PC Link API" -Direction Inbound -Protocol TCP -LocalPort 47392 -Action Allow -Profile Private
+```
+
+mDNS discovery (so Home Assistant lists the PC automatically) uses UDP 5353,
+which Windows already allows for its own network discovery on private networks.
 
 ## Optional extras
 - `Pillow` — JPEG screenshots (`screenshots.format: jpeg`); without it

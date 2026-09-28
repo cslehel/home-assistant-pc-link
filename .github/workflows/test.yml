@@ -1,0 +1,66 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Home Assistant ships a release every month (plus patch releases); re-test
+    # the integration against the newest one every Monday.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  service:
+    name: PC Link service (pure-Python tests)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -q
+
+  integration:
+    name: Home Assistant integration (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: newest Home Assistant
+            python-version: "3.13"
+            harness: "pytest-homeassistant-custom-component"
+          - name: oldest supported (2024.3)
+            python-version: "3.11"
+            harness: "pytest-homeassistant-custom-component==0.13.109 zeroconf==0.131.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install ${{ matrix.harness }} PyTurboJPEG tzdata
+      - run: pip freeze | grep -i "^homeassistant=="
+      - run: pytest tests_ha -q -p no:cacheprovider
+
+  hassfest:
+    name: hassfest (Home Assistant manifest validation)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    name: HACS validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration
+          # The brands check needs the "pclink" domain in home-assistant/brands
+          # (submit the logo there before requesting inclusion in the HACS default store).
+          ignore: brands

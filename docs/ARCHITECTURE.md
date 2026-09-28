@@ -55,6 +55,21 @@ Terminal Services idle timer and `WTSSendMessage` for warnings) and still logs
 them off / blocks login. Grants from Home Assistant can additionally be gated
 behind a **parent PIN** (`pin.py`).
 
+## Home Assistant side
+
+Two transports share one entity model (`pclink/entities.py`): every entity is
+defined once and rendered either as an **MQTT discovery** payload or as a
+transport-neutral **catalog entry** served by the local API
+(`GET /api/entities`). The **PC Link integration** (`custom_components/pclink`)
+consumes the catalog: it opens the API's WebSocket for pushed state and events
+(falling back to REST polling), creates one entity per catalog entry
+(`sensor`, `binary_sensor`, `switch`, `number`, `button`, `text`, `camera`),
+sends entity commands as the JSON `set` action, fires every event as
+`pclink_event` (which its device triggers match on) and exposes the JSON
+commands as `pclink.*` actions. New catalog entries (a reloaded config, a new
+user) become entities at runtime. The PC announces the API with mDNS
+(`pclink/discovery.py`, `_pclink._tcp`) so the config flow can offer it.
+
 ## Multi-PC
 
 Every PC subscribes to the other PCs' retained availability and user-state
@@ -102,8 +117,9 @@ pclink/
   config.py       YAML schema + validation
   ha.py           MQTT connection + discovery + peer subscriptions
   entities.py     Home Assistant discovery payload builders (incl. device triggers, camera, fleet)
-  api.py          optional local REST / WebSocket API
+  api.py          optional local REST / WebSocket API (+ entity catalog)
   webui.py        the setup / status page served by the API
+  discovery.py    mDNS announcement of the API for the Home Assistant integration
   telemetry.py    psutil metrics + top processes
   devices.py      USB devices, removable drives, printers
   winupdate.py    Windows Update status + triggers
@@ -117,4 +133,13 @@ pclink/
   hardening.py    service ACL + recovery (tamper resistance)
   agent/          per-session agent: win_activity, win_presence, coreaudio, media,
                   capture, browser_url, tray, main
+custom_components/pclink/   the Home Assistant integration (HACS)
+  api.py          async client for the local API (REST + WebSocket)
+  coordinator.py  pushed state, catalog refresh, events, polling fallback
+  entity.py       catalog entry -> entity; dynamic entity creation
+  sensor.py binary_sensor.py switch.py number.py button.py text.py camera.py
+  config_flow.py  manual / mDNS discovery / reauth / reconfigure
+  services.py     pclink.* actions (services.yaml, strings.json)
+  device_trigger.py diagnostics.py
+tests_ha/         integration tests (pytest-homeassistant-custom-component)
 ```

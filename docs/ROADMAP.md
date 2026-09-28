@@ -59,9 +59,16 @@ ideas that came up while building these.
 - [x] Multi-PC roll-up dashboard — `fleet:` (`fleet.py`): a virtual
       "PC Link (all PCs)" device with per-user totals across PCs, plus
       `time_limits.shared_budget` to make one budget span all PCs.
+- [x] Native Home Assistant integration (no broker needed) —
+      `custom_components/pclink`: HACS install, UI config flow with mDNS
+      discovery, entities from the PC's catalog (`GET /api/entities`),
+      `pclink.*` actions, device triggers, `pclink_event`; tested against the
+      newest and the oldest supported Home Assistant release.
 
 ## Ideas for later
 - [ ] Per-rule weekly budgets.
+- [ ] "All PCs" roll-up computed inside the integration (today it needs MQTT
+      between the PCs).
 - [ ] Browser-extension based URL blocking (instead of closing the tab).
 - [ ] Per-seat display power control (turn a seat's monitor off from HA).
 - [ ] Localised tray messages.

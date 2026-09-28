@@ -1,7 +1,7 @@
 # Home Assistant PC Link
 
-A Python **Windows service** that connects a PC to **Home Assistant** over MQTT.
-It enforces per-user screen-time limits (daily, weekly, bedtime, per app and
+A Python **Windows service** plus a **Home Assistant integration** that connect a
+PC to **Home Assistant**. It enforces per-user screen-time limits (daily, weekly, bedtime, per app and
 per website), blocks logins when time runs out, knows whether somebody is
 really sitting at each seat, and publishes rich PC telemetry, hardware sensor
 readings, power controls and activity statistics (gaming vs. browsing, per
@@ -87,11 +87,16 @@ screen from Home Assistant (a `camera` entity). PIN-gated, the child is told,
 and parent accounts are never captured. See `screenshots:` in the config.
 
 ### Home Assistant integration
-MQTT discovery for every entity, native **device triggers** ("Kevin ran out of
-time", "left the seat", "is due for a break", ...), a virtual **"all PCs"**
-roll-up device when several PCs share a broker (with optional **shared
-budgets** across PCs), an optional **local REST/WebSocket API** with a
-**setup/status page**, and **hot reload** of the configuration file. See
+A **PC Link integration** for Home Assistant (HACS-installable, UI setup, the
+PC is discovered on the LAN) that needs **no MQTT broker**: every entity, a
+full set of **actions** (`pclink.add_minutes`, `pclink.focus`,
+`pclink.set_limit`, `pclink.notify`, ...) with a device picker, native **device
+triggers** ("Kevin ran out of time", "left the seat", "is due for a break",
+...) and `pclink_event` bus events. Alternatively, classic **MQTT discovery**
+with the same entities and triggers, plus a virtual **"all PCs"** roll-up
+device when several PCs share a broker (with optional **shared budgets**
+across PCs). Both come with a **local REST/WebSocket API**, a **setup/status
+page** and **hot reload** of the configuration file. See
 [docs/HOMEASSISTANT.md](docs/HOMEASSISTANT.md) and [docs/API.md](docs/API.md).
 
 ### Tray icon
@@ -109,13 +114,14 @@ to escape their limit; administrators keep full control. See
 ## How it fits together
 
 ```
-Home Assistant  ─── MQTT ───►  PCLink service (LocalSystem, session 0)
-   (entities,   ◄── MQTT ───   │  time accounting · rules · presence · login block
-    triggers)                  │  telemetry · hardware sensors · power · discovery
-   other PCs    ◄── MQTT ───►  │  fleet roll-up / shared budgets
-   browser      ◄── HTTP ───►  │  optional local API + setup page
-                               │
-                               └─ localhost socket ─► per-session agents
+Home Assistant                 PCLink service (LocalSystem, session 0)
+  PC Link integration ◄─ WS/REST ─►│  time accounting · rules · presence · login block
+  (entities, actions,              │  telemetry · hardware sensors · power
+   triggers, events)               │  entity catalog · local API + setup page
+  or: MQTT integration ◄── MQTT ──►│  MQTT discovery (alternative transport)
+   other PCs           ◄── MQTT ──►│  fleet roll-up / shared budgets
+                                   │
+                                   └─ localhost socket ─► per-session agents
                                     (one per ASTER seat, run as that user)
                                     foreground · idle · controller · display state
                                     audio/volume · URL · now playing · tray
@@ -157,10 +163,28 @@ python -m pclink start
 Manage it with `python -m pclink start|stop|restart|remove`. To uninstall,
 `python -m pclink remove` (it restores the default service permissions first).
 
-MQTT discovery creates a Home Assistant **device** with all entities
-automatically — no YAML in Home Assistant required. See
-[docs/HOMEASSISTANT.md](docs/HOMEASSISTANT.md) for the entity list, example
-dashboard cards and automations.
+## Connect it to Home Assistant
+
+**Recommended: the PC Link integration** (no MQTT broker needed).
+
+```powershell
+# on the PC: enable the local API, paste the printed block into config.yaml, restart the service
+python -m pclink api-token
+python -m pclink restart
+New-NetFirewallRule -DisplayName "PC Link API" -Direction Inbound -Protocol TCP -LocalPort 47392 -Action Allow -Profile Private
+```
+
+In Home Assistant, install **PC Link** from HACS (add this repository as a
+custom *Integration* repository) or copy `custom_components/pclink/` into
+`config/custom_components/`, restart, then Settings → Devices & services: the
+PC is listed as *Discovered*; enter the token. A device with every entity
+appears, plus `pclink.*` actions and device triggers.
+
+**Alternative: MQTT discovery.** Point `mqtt:` in the config at your broker and
+the same device appears through the MQTT integration.
+
+See [docs/HOMEASSISTANT.md](docs/HOMEASSISTANT.md) for both paths, the entity
+list, the actions, example dashboard cards and automations.
 
 For antivirus / SmartScreen false positives and how to ship a signed build, see
 [docs/ANTIVIRUS.md](docs/ANTIVIRUS.md).
@@ -173,7 +197,13 @@ A fully commented example is in [`config.example.yaml`](config.example.yaml).
 The service hot-reloads the file when it changes. The essentials:
 
 ```yaml
-mqtt:
+api:                           # for the Home Assistant integration (python -m pclink api-token)
+  enabled: true
+  host: 0.0.0.0
+  token: change-me
+
+mqtt:                          # or / and: MQTT discovery
+  enabled: false
   host: homeassistant.local
   username: pclink
   password: change-me
@@ -213,12 +243,18 @@ that are still open.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest            # 150+ tests, run on any OS with in-memory fakes
+pytest            # 160+ service tests, run on any OS with in-memory fakes
+
+# Home Assistant integration tests (needs the HA test harness; see docs/DEVELOPMENT.md)
+pip install pytest-homeassistant-custom-component PyTurboJPEG tzdata
+pytest tests_ha
 ```
 
 The platform-independent core (time accounting, rules, presence, break
 reminders, PIN gate, fleet roll-up, activity classification, config, store,
-MQTT payloads, IPC, the local API) is fully unit-tested without Windows.
+entity catalog, MQTT payloads, IPC, the local API) is fully unit-tested without
+Windows. The integration is tested against the newest Home Assistant release
+and the oldest supported one (2024.3) on every push and every week (CI).
 
 ## License
 

@@ -4,17 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "home-assistant-pc-link"
-version = "0.2.0"
-description = "Windows service that bridges a (multiseat) PC to Home Assistant: per-user screen-time limits (daily/weekly/bedtime/per-app), presence detection, login blocking, telemetry, hardware sensors, power control, activity tracking, device triggers and a local API."
+version = "0.3.0"
+description = "Windows service + Home Assistant integration that bridge a (multiseat) PC to Home Assistant: per-user screen-time limits (daily/weekly/bedtime/per-app), presence detection, login blocking, telemetry, hardware sensors, power control, activity tracking, device triggers and a local API."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "cslehel" }]
-keywords = ["home-assistant", "mqtt", "parental-controls", "screen-time", "windows-service", "aster", "multiseat", "presence", "focus-mode"]
+keywords = ["home-assistant", "hacs", "mqtt", "parental-controls", "screen-time", "windows-service", "aster", "multiseat", "presence", "focus-mode"]
 dependencies = ["psutil>=5.9", "paho-mqtt>=2.0", "PyYAML>=6.0"]
 
 [project.optional-dependencies]
-windows = ["pywin32>=306", "comtypes>=1.2", "nvidia-ml-py>=12.535"]
+windows = ["pywin32>=306", "comtypes>=1.2", "nvidia-ml-py>=12.535", "zeroconf>=0.130"]
 screenshots = ["Pillow>=10.0"]
 nowplaying = ["winsdk>=1.0"]
 dev = ["pytest>=7.4"]

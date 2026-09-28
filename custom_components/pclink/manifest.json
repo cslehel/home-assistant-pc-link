@@ -1,0 +1,14 @@
+{
+  "domain": "pclink",
+  "name": "PC Link",
+  "codeowners": ["@cslehel"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/cslehel/home-assistant-pc-link/blob/main/docs/HOMEASSISTANT.md",
+  "integration_type": "device",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/cslehel/home-assistant-pc-link/issues",
+  "requirements": [],
+  "version": "0.3.0",
+  "zeroconf": ["_pclink._tcp.local."]
+}

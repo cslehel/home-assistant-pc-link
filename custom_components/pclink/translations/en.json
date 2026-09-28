@@ -1,0 +1,616 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Add a PC",
+        "description": "On the PC, enable the local API in config.yaml (run `python -m pclink api-token` for a ready-made block) and restart the service.",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "token": "API token"
+        },
+        "data_description": {
+          "host": "IP address or host name of the PC.",
+          "port": "api.port on the PC (default 47392).",
+          "token": "api.token from the PC's config.yaml."
+        }
+      },
+      "zeroconf_confirm": {
+        "title": "Add {name}",
+        "description": "{name} was found at {host}. Enter its API token (api.token in config.yaml on the PC).",
+        "data": {
+          "token": "API token"
+        }
+      },
+      "reauth_confirm": {
+        "title": "New token for {name}",
+        "description": "The PC rejected the stored token. Enter the current api.token from its config.yaml.",
+        "data": {
+          "token": "API token"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure {name}",
+        "description": "Change the address, port or token of this PC.",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "token": "API token"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect. Check the address, that api.enabled is true, api.host is 0.0.0.0 and the Windows firewall allows the port.",
+      "invalid_auth": "The token was rejected.",
+      "outdated": "The PC Link service on that PC is too old for this integration; update it.",
+      "wrong_device": "That address belongs to a different PC.",
+      "unknown": "Unexpected error."
+    },
+    "abort": {
+      "already_configured": "This PC is already configured.",
+      "reauth_successful": "The token was updated.",
+      "reconfigure_successful": "The PC was reconfigured.",
+      "no_id": "The discovered service did not identify itself.",
+      "unknown": "Unexpected error."
+    }
+  },
+  "device_automation": {
+    "trigger_type": {
+      "time_up": "{subtype} ran out of time",
+      "warning": "{subtype} is about to run out of time",
+      "grace_started": "{subtype} entered the grace period",
+      "logged_in": "{subtype} logged in",
+      "logged_off": "{subtype} logged off",
+      "login_blocked": "{subtype} got login blocked",
+      "login_unblocked": "{subtype} got login unblocked",
+      "bedtime": "{subtype} reached bedtime",
+      "focus_started": "{subtype} started focus mode",
+      "focus_ended": "{subtype} ended focus mode",
+      "break_due": "{subtype} is due for a break",
+      "app_limit_reached": "{subtype} hit an app or site limit",
+      "app_closed": "{subtype} had an app or tab closed",
+      "reward_claimed": "{subtype} earned bonus minutes",
+      "screenshot_taken": "{subtype} had a screenshot taken",
+      "presence_away": "{subtype} left the seat",
+      "presence_back": "{subtype} came back to the seat",
+      "started": "Service started",
+      "config_reloaded": "Configuration reloaded",
+      "parent_unlocked": "Parent PIN entered",
+      "pin_wrong": "Wrong parent PIN entered",
+      "pin_locked_out": "Parent PIN locked out",
+      "reboot_pending": "Needs a reboot for updates",
+      "updates_available": "Has Windows updates pending",
+      "usb_changed": "USB devices changed",
+      "printer_error": "Printer reported an error"
+    }
+  },
+  "services": {
+    "add_minutes": {
+      "name": "Add minutes",
+      "description": "Give a user extra screen time for today.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        },
+        "minutes": {
+          "name": "Minutes",
+          "description": "How many minutes to add."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
+        }
+      }
+    },
+    "earn": {
+      "name": "Earn minutes",
+      "description": "Add bonus minutes recorded as earned (for example after a chore).",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        },
+        "minutes": {
+          "name": "Minutes",
+          "description": "How many minutes were earned."
+        },
+        "reason": {
+          "name": "Reason",
+          "description": "Shown in the event log and statistics."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
+        }
+      }
+    },
+    "reward": {
+      "name": "Claim reward",
+      "description": "Claim one of the configured rewards for a user.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        },
+        "name": {
+          "name": "Reward",
+          "description": "Name of the reward as configured on the PC."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
+        }
+      }
+    },
+    "set_limit": {
+      "name": "Set limit",
+      "description": "Override a user's daily or weekly limit. Omit minutes to remove the limit.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        },
+        "scope": {
+          "name": "Scope",
+          "description": "Which limit to change."
+        },
+        "minutes": {
+          "name": "Minutes",
+          "description": "New limit in minutes; leave empty for unlimited."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
+        }
+      }
+    },
+    "clear_overrides": {
+      "name": "Clear overrides",
+      "description": "Return a user to the limits in the configuration file.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
+        }
+      }
+    },
+    "block": {
+      "name": "Pause access",
+      "description": "Pause a user's computer access now (log off and block login).",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        }
+      }
+    },
+    "unblock": {
+      "name": "Resume access",
+      "description": "Lift a manual pause.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
+        }
+      }
+    },
+    "focus": {
+      "name": "Start focus mode",
+      "description": "Only allow-listed apps and sites for a period.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        },
+        "minutes": {
+          "name": "Minutes",
+          "description": "Duration; defaults to the user's configured focus duration."
+        },
+        "allow": {
+          "name": "Extra allowed",
+          "description": "Additional apps or sites to allow this time (list)."
+        }
+      }
+    },
+    "focus_off": {
+      "name": "End focus mode",
+      "description": "End focus mode early.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
+        }
+      }
+    },
+    "extend_bedtime": {
+      "name": "Extend bedtime",
+      "description": "Push tonight's bedtime later.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        },
+        "minutes": {
+          "name": "Minutes",
+          "description": "How much later."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
+        }
+      }
+    },
+    "rule_enabled": {
+      "name": "Enable or disable a rule",
+      "description": "Turn a per-app or per-site rule on or off for a user.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        },
+        "rule": {
+          "name": "Rule",
+          "description": "Rule name as configured on the PC."
+        },
+        "enabled": {
+          "name": "Enabled",
+          "description": "Whether the rule is active."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
+        }
+      }
+    },
+    "rule_limit": {
+      "name": "Set rule limit",
+      "description": "Change today's minutes for a per-app or per-site rule.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        },
+        "rule": {
+          "name": "Rule",
+          "description": "Rule name as configured on the PC."
+        },
+        "minutes": {
+          "name": "Minutes",
+          "description": "Minutes allowed today; leave empty for unlimited."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
+        }
+      }
+    },
+    "breaks": {
+      "name": "Break reminders",
+      "description": "Turn a user's break reminders on or off.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        },
+        "enabled": {
+          "name": "Enabled",
+          "description": "Whether reminders are shown."
+        }
+      }
+    },
+    "notify": {
+      "name": "Send message",
+      "description": "Show a message on the PC (to one user or to everyone).",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name; leave empty for every active session."
+        },
+        "title": {
+          "name": "Title",
+          "description": "Message title."
+        },
+        "message": {
+          "name": "Message",
+          "description": "Text to show."
+        },
+        "level": {
+          "name": "Level",
+          "description": "Info, warning or error."
+        }
+      }
+    },
+    "logoff": {
+      "name": "Log off",
+      "description": "Log a user (or everyone) off.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name; leave empty for every active session."
+        }
+      }
+    },
+    "lock": {
+      "name": "Lock",
+      "description": "Lock a user's session (or all sessions).",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name; leave empty for every active session."
+        }
+      }
+    },
+    "volume": {
+      "name": "Volume",
+      "description": "Set the volume or mute in a user's session.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name; leave empty for every active session."
+        },
+        "level": {
+          "name": "Level",
+          "description": "Volume 0-100."
+        },
+        "muted": {
+          "name": "Muted",
+          "description": "Mute or unmute."
+        }
+      }
+    },
+    "screenshot": {
+      "name": "Take screenshot",
+      "description": "Take a screenshot of a user's screen (the user is told).",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
+        }
+      }
+    },
+    "launch": {
+      "name": "Launch app",
+      "description": "Start a configured app, or any command line, in a user's session.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "name": {
+          "name": "App",
+          "description": "Name of an app from the apps: section."
+        },
+        "command": {
+          "name": "Command",
+          "description": "Command line to run instead of a configured app."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name; leave empty for every active session."
+        }
+      }
+    },
+    "close_app": {
+      "name": "Close app",
+      "description": "Close a configured app or a process in a user's session.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "name": {
+          "name": "App",
+          "description": "Name of an app from the apps: section."
+        },
+        "process": {
+          "name": "Process",
+          "description": "Process name to close instead, e.g. javaw.exe."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name; leave empty for every active session."
+        }
+      }
+    },
+    "power": {
+      "name": "Power",
+      "description": "Shut down, reboot, sleep or hibernate the PC, or cancel a pending shutdown.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "action": {
+          "name": "Action",
+          "description": "What to do."
+        },
+        "delay": {
+          "name": "Delay",
+          "description": "Seconds before shutting down or rebooting."
+        },
+        "message": {
+          "name": "Message",
+          "description": "Shown to logged-in users."
+        }
+      }
+    },
+    "wake_on_lan": {
+      "name": "Wake another PC",
+      "description": "Send a Wake-on-LAN packet from this PC.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "mac": {
+          "name": "MAC address",
+          "description": "MAC of the PC to wake."
+        },
+        "broadcast": {
+          "name": "Broadcast address",
+          "description": "Defaults to the PC's configured broadcast."
+        },
+        "port": {
+          "name": "Port",
+          "description": "UDP port, usually 9."
+        }
+      }
+    },
+    "pin": {
+      "name": "Unlock parent PIN",
+      "description": "Unlock the parent PIN for the configured timeout.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "The PIN."
+        }
+      }
+    },
+    "pin_lock": {
+      "name": "Lock parent PIN",
+      "description": "Re-lock the parent PIN immediately.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        }
+      }
+    },
+    "parent_present": {
+      "name": "Parent at home",
+      "description": "Tell the PC whether a parent is home (auto-extends bedtimes).",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "present": {
+          "name": "Present",
+          "description": "True when a parent is home."
+        }
+      }
+    },
+    "reload_config": {
+      "name": "Reload configuration",
+      "description": "Reload config.yaml on the PC.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        }
+      }
+    },
+    "command": {
+      "name": "Raw command",
+      "description": "Send any JSON command the PC's API accepts.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured."
+        },
+        "data": {
+          "name": "Command",
+          "description": "The JSON object, e.g. {\"action\": \"add_minutes\", \"user\": \"kevin\", \"minutes\": 20}."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
+        }
+      }
+    }
+  }
+}

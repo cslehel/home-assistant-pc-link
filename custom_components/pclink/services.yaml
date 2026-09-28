@@ -1,0 +1,239 @@
+# Field structure only; names and descriptions live in strings.json / translations.
+add_minutes:
+  fields:
+    device_id: &device
+      selector: {device: {integration: pclink, multiple: true}}
+    user: &user
+      required: true
+      example: kevin
+      selector: {text: {}}
+    minutes:
+      required: true
+      example: 30
+      selector: {number: {min: 1, max: 1440, unit_of_measurement: min}}
+    pin: &pin
+      selector: {text: {type: password}}
+earn:
+  fields:
+    device_id: *device
+    user: *user
+    minutes:
+      required: true
+      example: 30
+      selector: {number: {min: 1, max: 1440, unit_of_measurement: min}}
+    reason:
+      example: Homework done
+      selector: {text: {}}
+    pin: *pin
+reward:
+  fields:
+    device_id: *device
+    user: *user
+    name:
+      required: true
+      example: Homework done
+      selector: {text: {}}
+    pin: *pin
+set_limit:
+  fields:
+    device_id: *device
+    user: *user
+    scope:
+      required: true
+      default: today
+      selector: {select: {options: [today, weekday, weekend, weekly]}}
+    minutes:
+      example: 120
+      selector: {number: {min: 0, max: 10080, unit_of_measurement: min}}
+    pin: *pin
+clear_overrides:
+  fields:
+    device_id: *device
+    user: *user
+    pin: *pin
+block:
+  fields:
+    device_id: *device
+    user: *user
+unblock:
+  fields:
+    device_id: *device
+    user: *user
+    pin: *pin
+focus:
+  fields:
+    device_id: *device
+    user: *user
+    minutes:
+      example: 45
+      selector: {number: {min: 1, max: 1440, unit_of_measurement: min}}
+    allow:
+      example: '["docs.google.com", "winword.exe"]'
+      selector: {object: {}}
+focus_off:
+  fields:
+    device_id: *device
+    user: *user
+    pin: *pin
+extend_bedtime:
+  fields:
+    device_id: *device
+    user: *user
+    minutes:
+      default: 30
+      selector: {number: {min: 1, max: 480, unit_of_measurement: min}}
+    pin: *pin
+rule_enabled:
+  fields:
+    device_id: *device
+    user: *user
+    rule:
+      required: true
+      example: YouTube
+      selector: {text: {}}
+    enabled:
+      required: true
+      default: true
+      selector: {boolean: {}}
+    pin: *pin
+rule_limit:
+  fields:
+    device_id: *device
+    user: *user
+    rule:
+      required: true
+      example: YouTube
+      selector: {text: {}}
+    minutes:
+      example: 30
+      selector: {number: {min: 0, max: 1440, unit_of_measurement: min}}
+    pin: *pin
+breaks:
+  fields:
+    device_id: *device
+    user: *user
+    enabled:
+      required: true
+      default: true
+      selector: {boolean: {}}
+notify:
+  fields:
+    device_id: *device
+    user:
+      example: kevin
+      selector: {text: {}}
+    title:
+      example: Dinner
+      selector: {text: {}}
+    message:
+      required: true
+      example: Dinner is ready in 10 minutes
+      selector: {text: {}}
+    level:
+      default: info
+      selector: {select: {options: [info, warning, error]}}
+logoff:
+  fields:
+    device_id: *device
+    user:
+      example: kevin
+      selector: {text: {}}
+lock:
+  fields:
+    device_id: *device
+    user:
+      example: kevin
+      selector: {text: {}}
+volume:
+  fields:
+    device_id: *device
+    user:
+      example: kevin
+      selector: {text: {}}
+    level:
+      example: 30
+      selector: {number: {min: 0, max: 100, unit_of_measurement: "%"}}
+    muted:
+      selector: {boolean: {}}
+screenshot:
+  fields:
+    device_id: *device
+    user: *user
+    pin: *pin
+launch:
+  fields:
+    device_id: *device
+    name:
+      example: Minecraft
+      selector: {text: {}}
+    command:
+      example: 'C:\Program Files\App\app.exe'
+      selector: {text: {}}
+    user:
+      example: kevin
+      selector: {text: {}}
+close_app:
+  fields:
+    device_id: *device
+    name:
+      example: Minecraft
+      selector: {text: {}}
+    process:
+      example: javaw.exe
+      selector: {text: {}}
+    user:
+      example: kevin
+      selector: {text: {}}
+power:
+  fields:
+    device_id: *device
+    action:
+      required: true
+      default: shutdown
+      selector: {select: {options: [shutdown, reboot, sleep, hibernate, cancel_shutdown]}}
+    delay:
+      example: 60
+      selector: {number: {min: 0, max: 86400, unit_of_measurement: s}}
+    message:
+      example: Shutting down for the night
+      selector: {text: {}}
+wake_on_lan:
+  fields:
+    device_id: *device
+    mac:
+      required: true
+      example: AA:BB:CC:DD:EE:FF
+      selector: {text: {}}
+    broadcast:
+      example: 192.168.1.255
+      selector: {text: {}}
+    port:
+      example: 9
+      selector: {number: {min: 1, max: 65535}}
+pin:
+  fields:
+    device_id: *device
+    pin:
+      required: true
+      selector: {text: {type: password}}
+pin_lock:
+  fields:
+    device_id: *device
+parent_present:
+  fields:
+    device_id: *device
+    present:
+      required: true
+      default: true
+      selector: {boolean: {}}
+reload_config:
+  fields:
+    device_id: *device
+command:
+  fields:
+    device_id: *device
+    data:
+      required: true
+      example: '{"action": "add_minutes", "user": "kevin", "minutes": 20}'
+      selector: {object: {}}
+    pin: *pin
