@@ -15,18 +15,18 @@ def make_factory():
             - name: dad
               unlimited: true
     """))
-    return cfg, EntityFactory(cfg, base_topic="pclink/testpc", availability_topic="pclink/testpc/availability",
-                              state_topic="pclink/testpc/state")
+    return cfg, EntityFactory(cfg)
 
 
-def test_pc_entities_have_unique_ids_and_valid_payloads():
+def test_pc_entities_have_unique_ids_and_valid_specs():
     cfg, f = make_factory()
     ents = f.pc_entities({"disks": ["c", "d"], "gpu_name": "RTX", "battery_percent": 90})
     ids = [e.unique_id for e in ents]
     assert len(ids) == len(set(ids))  # unique
     for e in ents:
-        assert e.payload["device"]["identifiers"] == ["pclink_testpc"]
-        json.dumps(e.payload)  # serialisable
+        assert e.unique_id == f"pclink_testpc_{e.object_id}"
+        json.dumps(e.catalog_entry())  # serialisable
+    assert f.device_block()["identifiers"] == ["pclink_testpc"]
     # shutdown/reboot buttons present
     objs = {e.object_id for e in ents}
     assert {"shutdown", "reboot", "cpu_percent", "memory_percent", "disk_c_percent", "gpu_load", "battery"} <= objs
@@ -40,10 +40,10 @@ def test_managed_user_entities_include_limit_controls():
     assert "user_kevin_limit_today" in objs
     assert "user_kevin_add_15" in objs
     assert "user_kevin_blocked" in objs
-    # number entities target the user state topic and have a command topic
+    # number entities read a user value and take a command of their own
     num = next(e for e in ents if e.object_id == "user_kevin_limit_today")
     assert num.component == "number"
-    assert num.payload["command_topic"].endswith("/set/user_kevin_limit_today")
+    assert num.spec["command"] == "user_kevin_limit_today" and num.spec["value"] == "limit_today"
 
 
 def test_unmanaged_user_has_no_limit_controls():
@@ -78,7 +78,7 @@ def test_new_user_entities_follow_policy():
         windows_update: {enabled: true, allow_install: true}
         telemetry: {top_processes: 3, usb_devices: true, printers: true}
     """))
-    f = EntityFactory(cfg, base_topic="pclink/testpc", availability_topic="a", state_topic="s")
+    f = EntityFactory(cfg)
     ents = f.user_entities("kevin", cfg.user_policy("kevin"), managed=True)
     objs = {e.object_id: e for e in ents}
     for oid in ("user_kevin_presence", "user_kevin_now_playing", "user_kevin_weekly_limit", "user_kevin_weekly_remaining",
@@ -90,40 +90,33 @@ def test_new_user_entities_follow_policy():
         assert oid in objs, oid
     assert "user_kevin_rule_tiktok_limit_today" not in objs   # a blocklist entry has no limit number
     cams = [e for e in ents if e.component == "camera"]
-    assert cams and cams[0].payload["topic"] == "pclink/testpc/user/kevin/screenshot"
+    assert cams and cams[0].spec["value"] == "screenshot"
     ids = [e.unique_id for e in ents]
     assert len(ids) == len(set(ids))
     for e in ents:
-        json.dumps(e.payload)
+        json.dumps(e.catalog_entry())
     dad = {e.object_id for e in f.user_entities("dad", cfg.user_policy("dad"), managed=False)}
     assert "user_dad_screenshot" not in dad and "user_dad_focus_mode" not in dad and "user_dad_now_playing" in dad
-    triggers = f.user_trigger_entities("kevin", cfg.user_policy("kevin"))
-    assert all(t.component == "device_automation" for t in triggers)
-    assert {t.payload["payload"] for t in triggers} >= {"time_up", "bedtime", "focus_started", "break_due"}
     pc = {e.object_id: e for e in f.pc_entities({"disks": [], "gpu_name": None})}
     for oid in ("parent_pin", "parent_unlocked", "parent_present", "reload_config", "launch_word", "close_word",
                 "pending_updates", "reboot_pending", "check_updates", "install_updates", "top_process", "usb_devices",
                 "printer_status", "anyone_present"):
         assert oid in pc, oid
-    assert pc["parent_pin"].payload["mode"] == "password"
-    fleet = f.fleet_entities({"kevin": {"name": "Kevin"}}, "pclink/fleet/state", lambda slug: f"pclink/fleet/user/{slug}/state")
-    assert all(e.payload["device"]["identifiers"] == ["pclink_fleet"] for e in fleet)
-    assert {e.object_id for e in fleet} >= {"fleet_pcs_online", "fleet_user_kevin_total_today", "fleet_any_pc_in_use"}
+    assert pc["parent_pin"].spec["password"] is True
 
 
 # -- catalog for the native integration (GET /api/entities) ----------------------------------------
 
-CATALOG_PLATFORMS = {"sensor", "binary_sensor", "switch", "number", "button", "text", "camera"}
+CATALOG_PLATFORMS = {"sensor", "binary_sensor", "switch", "number", "button", "text", "camera", "update"}
 
 
 def test_pc_catalog_entries_are_transport_neutral():
     cfg, f = make_factory()
     ents = f.pc_entities({"disks": ["c"], "gpu_name": "RTX", "battery_percent": 90})
     entries = [e.catalog_entry() for e in ents]
-    entries = [e for e in entries if e]
     keys = {e["key"] for e in entries}
     assert {"cpu_percent", "shutdown", "time_limits_enabled", "broadcast_message", "parent_present"} <= keys
-    assert "online" not in keys  # availability-based power sensor is MQTT-only
+    assert "online" not in keys  # the availability-based power sensor is gone
     for e in entries:
         assert e["source"] == "pc" and e["platform"] in CATALOG_PLATFORMS
         assert e["unique_id"].startswith("pclink_testpc_")
@@ -143,7 +136,6 @@ def test_pc_catalog_entries_are_transport_neutral():
 def test_user_catalog_entries_carry_user_and_commands():
     cfg, f = make_factory()
     entries = [e.catalog_entry() for e in f.user_entities("kevin", cfg.user_policy("kevin"), managed=True)]
-    entries = [e for e in entries if e]
     for e in entries:
         assert e["source"] == "user" and e["user"] == "kevin" and e["user_name"] == "kevin" and e["managed"] is True
     blocked = next(e for e in entries if e["key"] == "user_kevin_blocked")
@@ -168,20 +160,11 @@ def test_password_text_and_camera_specs():
           parent_pin: "1234"
           users: [{name: kevin, daily_limit_minutes: 60}]
     """))
-    f = EntityFactory(cfg, base_topic="pclink/testpc", availability_topic="a", state_topic="s")
-    pc = {e["key"]: e for e in (x.catalog_entry() for x in f.pc_entities({})) if e}
+    f = EntityFactory(cfg)
+    pc = {e["key"]: e for e in (x.catalog_entry() for x in f.pc_entities({}))}
     assert pc["parent_pin"]["platform"] == "text" and pc["parent_pin"]["password"] is True
     assert pc["parent_pin"]["value"] == "parent_pin_state"
-    user = {e["key"]: e for e in (x.catalog_entry() for x in f.user_entities("kevin", cfg.user_policy("kevin"), True)) if e}
+    user = {e["key"]: e for e in (x.catalog_entry() for x in f.user_entities("kevin", cfg.user_policy("kevin"), True))}
     cam = user["user_kevin_screenshot_image"]
     assert cam["platform"] == "camera" and cam["value"] == "screenshot" and cam["user"] == "kevin"
 
-
-def test_mqtt_only_items_have_no_catalog_entry():
-    cfg, f = make_factory()
-    assert all(e.catalog_entry() is None for e in f.user_trigger_entities("kevin", cfg.user_policy("kevin")))
-    assert all(e.catalog_entry() is None for e in f.pc_trigger_entities())
-    fleet = f.fleet_entities({"kevin": {"name": "Kevin"}}, "pclink/fleet/state", lambda slug: f"pclink/fleet/user/{slug}")
-    assert fleet and all(e.catalog_entry() is None for e in fleet)
-    online = next(e for e in f.pc_entities({}) if e.object_id == "online")
-    assert online.catalog_entry() is None

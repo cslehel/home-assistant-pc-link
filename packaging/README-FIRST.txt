@@ -5,11 +5,14 @@ INSTALL
  1. Before extracting: right-click the downloaded zip > Properties >
     tick "Unblock" > OK. (Otherwise Windows warns about every file.)
  2. Extract the zip and double-click install.cmd. Allow the administrator prompt.
- 3. The first run creates C:\ProgramData\PCLink\config.yaml and opens it in
-    Notepad. Enter your Home Assistant connection and your users, save it,
-    then double-click install.cmd again.
-    The program is copied to C:\Program Files\PCLink and the service starts.
- 4. Add the PC in Home Assistant:
+ 3. The first run creates C:\ProgramData\PCLink\config.yaml, with the
+    connection to Home Assistant already set up, and opens it in Notepad.
+    Enter your users, save it, then double-click install.cmd again.
+    The program is copied to C:\Program Files\PCLink and the service starts;
+    the installer ends by showing a token.
+ 4. In Home Assistant (with the PC Link integration installed): Settings ->
+    Devices & services. The PC shows up under "Discovered": click Add and
+    enter the token. More:
     https://github.com/cslehel/home-assistant-pc-link/blob/main/docs/HOMEASSISTANT.md
 
 UPGRADE
@@ -24,7 +27,7 @@ UNINSTALL
 COMMANDS (from an administrator prompt)
     "C:\Program Files\PCLink\pclink.exe" help
     "C:\Program Files\PCLink\pclink.exe" check-config
-    "C:\Program Files\PCLink\pclink.exe" api-token
+    "C:\Program Files\PCLink\pclink.exe" setup-api --show    (the token again)
     "C:\Program Files\PCLink\pclink.exe" selftest
 
 ANTIVIRUS

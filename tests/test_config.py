@@ -11,10 +11,8 @@ def load(yaml_text):
 
 
 def test_minimal_config_defaults():
-    cfg = load("mqtt: {host: broker}")
-    assert cfg.mqtt.host == "broker"
+    cfg = load("{}")
     assert cfg.device.id  # derived from hostname
-    assert cfg.mqtt.client_id.startswith("pclink-")
 
 
 def test_user_policy_by_day():
@@ -166,12 +164,9 @@ def test_invalid_new_sections_rejected():
         load("apps: [{name: x}]")
 
 
-def test_mqtt_and_api_switches():
-    cfg = load("mqtt: {enabled: false}\napi: {enabled: true, host: 0.0.0.0, token: t, advertise: false}")
-    assert cfg.mqtt.enabled is False and cfg.mqtt.discovery is True
+def test_api_switches():
+    cfg = load("api: {enabled: true, host: 0.0.0.0, token: t, advertise: false}")
     assert cfg.api.enabled and cfg.api.advertise is False
-    cfg = load("mqtt: {discovery: false}")
-    assert cfg.mqtt.enabled is True and cfg.mqtt.discovery is False
     assert load("api: {enabled: true}").api.advertise is True
     with pytest.raises(ConfigError):
         load("api: {enabled: true, host: 0.0.0.0}")  # LAN bind still needs a token

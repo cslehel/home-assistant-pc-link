@@ -13,8 +13,9 @@ from .entity import PclinkEntity, async_setup_platform_entities
 
 
 class PclinkNumber(PclinkEntity, NumberEntity):
-    def __init__(self, coordinator: PclinkCoordinator, spec: dict[str, Any]) -> None:
-        super().__init__(coordinator, spec)
+    def _apply_spec(self) -> None:
+        super()._apply_spec()
+        spec = self.spec
         self._attr_native_min_value = float(spec.get("min", 0))
         self._attr_native_max_value = float(spec.get("max", 1440))
         self._attr_native_step = float(spec.get("step", 1))
@@ -33,7 +34,7 @@ class PclinkNumber(PclinkEntity, NumberEntity):
             return None
 
     async def async_set_native_value(self, value: float) -> None:
-        await self.async_send(int(value) if float(value).is_integer() else value)
+        await self.async_send(int(value) if float(value).is_integer() else value, shown=value)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:

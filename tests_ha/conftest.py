@@ -30,7 +30,7 @@ def auto_enable_custom_integrations(enable_custom_integrations):
     yield
 
 
-HEALTH = {"ok": True, "version": "0.3.0", "device": "testpc", "name": "TestPC", "uptime_seconds": 5, "mqtt_connected": False}
+HEALTH = {"ok": True, "version": "0.3.0", "device": "testpc", "name": "TestPC", "uptime_seconds": 5}
 
 
 def make_catalog() -> dict[str, Any]:
@@ -135,8 +135,11 @@ class FakeClient:
 
     instances: list["FakeClient"] = []
 
-    def __init__(self, session, host, port, token) -> None:
+    def __init__(self, session, host, port, token, tls=False, fingerprint=None) -> None:
         self.host, self.port, self.token = host, int(port), token
+        self.tls, self.fingerprint = bool(tls or fingerprint), fingerprint
+        self.recorded_events: list[dict[str, Any]] = []   # what GET /api/events returns (newest first)
+        self.event_requests = 0
         self.health_doc = dict(HEALTH)
         self.catalog = make_catalog()
         self.pc_state, self.user_state = make_state()
@@ -144,6 +147,8 @@ class FakeClient:
         self.refuse: Optional[str] = None       # error text to return for every command
         self.fail: Optional[Exception] = None   # raised by every REST call
         self.auth_ok = token == "secret"
+        self.write_ok = True                    # False: reads work (loopback) but the token is not valid for writes
+        self.auth_probes = 0
         self.ws: Optional[FakeWs] = None
         self.ws_connects = 0
         self.screenshot_bytes = b"JPEGDATA"
@@ -151,7 +156,12 @@ class FakeClient:
 
     @property
     def base_url(self) -> str:
-        return f"http://{self.host}:{self.port}"
+        return f"{'https' if self.tls else 'http'}://{self.host}:{self.port}"
+
+    async def events(self, n=50, user=None, since=None, announced=False):
+        self._check()   # like an older service: ``since`` and ``announced`` are ignored, the log is returned
+        self.event_requests += 1
+        return json.loads(json.dumps(self.recorded_events[:n]))
 
     def _check(self) -> None:
         if self.fail is not None:
@@ -168,6 +178,13 @@ class FakeClient:
         if self.catalog is None:
             raise PclinkOutdatedError("no catalog")
         return json.loads(json.dumps(self.catalog))
+
+    async def check_write_auth(self):
+        self._check()
+        self.auth_probes += 1
+        if not self.write_ok:
+            raise PclinkAuthError("token rejected")
+        return {"writable": True}
 
     async def status(self):
         self._check()

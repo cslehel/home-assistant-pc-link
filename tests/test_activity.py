@@ -56,3 +56,21 @@ def test_known_game_by_name():
 def test_regular_app():
     c = clf()
     assert c.classify(report(name="code.exe", title="editor")).category == "app"
+
+
+def test_passive_use_is_not_idle():
+    from pclink.models import MediaInfo
+    c = clf()
+    r = report(name="chrome.exe", domain="youtube.com", idle=999)
+    assert c.classify(r).category == "idle"
+    # the caller's presence verdict wins ...
+    assert c.classify(r, presence="passive").category == "browsing"
+    assert c.classify(r, presence="idle").category == "idle"
+    # ... and without one, a playing video / full-screen app is still "in use"
+    r.media = MediaInfo(title="A film", status="playing")
+    assert c.classify(r).category == "browsing" and c.classify(r).domain == "youtube.com"
+    assert c.classify(r, presence="idle").category == "idle"
+    r.media = None
+    r.fullscreen_d3d = True
+    assert c.classify(r).is_active
+    assert clf(media_keeps_active=False).classify(r).category == "idle"

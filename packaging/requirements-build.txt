@@ -5,3 +5,9 @@
 pyinstaller>=6.10,<7
 pythonnet>=3.0.3      # in-process LibreHardwareMonitor sensors
 Pillow>=10.0          # JPEG screenshots
+# exact now-playing info (title / artist) from Windows' media controls, also for media in a browser tab
+winrt-runtime>=3.0
+winrt-Windows.Media.Control>=3.0
+winrt-Windows.Foundation>=3.0
+winrt-Windows.Foundation.Collections>=3.0
+winrt-Windows.Storage.Streams>=3.0

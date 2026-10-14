@@ -1,6 +1,5 @@
 # Core (all platforms)
 psutil>=5.9
-paho-mqtt>=2.0
 PyYAML>=6.0
 
 # Windows-only (installed automatically from requirements-windows.txt on Windows)

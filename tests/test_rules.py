@@ -140,3 +140,22 @@ def test_focus_mode_allowlist():
     assert d and d[0].source == "focus" and d[0].close_tab
     assert eng.tick("kevin", policy, now, Activity(category="app", app="winword.exe"), focus_active=True) == []
     assert eng.tick("kevin", policy, now, Activity(category="gaming", app="game.exe"), focus_active=True, enforcing=False) == []
+
+
+def test_is_loosening_rule_limit():
+    cfg = Config.from_dict(yaml.safe_load(YAML))
+    engine = RuleEngine(Store(":memory:"))
+    youtube = next(r for r in cfg.user_policy("kevin").rules if r.slug == "youtube")
+    day = datetime(2026, 9, 28).date()
+    assert engine.rule_limit_today("kevin", youtube, day) == 30
+    assert not engine.is_loosening_rule_limit("kevin", youtube, 30, day)
+    assert not engine.is_loosening_rule_limit("kevin", youtube, 10, day)
+    assert not engine.is_loosening_rule_limit("kevin", youtube, 0, day)
+    assert engine.is_loosening_rule_limit("kevin", youtube, 31, day)
+    # a negative override is stored as "no limit today"; dropping the override may raise it: both need the PIN
+    assert engine.is_loosening_rule_limit("kevin", youtube, -1, day)
+    assert engine.is_loosening_rule_limit("kevin", youtube, None, day)
+    engine.set_rule_limit_today("kevin", "youtube", day, -1)
+    assert engine.rule_limit_today("kevin", youtube, day) is None
+    assert not engine.is_loosening_rule_limit("kevin", youtube, -1, day)   # already unlimited
+    assert not engine.is_loosening_rule_limit("kevin", youtube, 20, day)   # back to a limit: tightening

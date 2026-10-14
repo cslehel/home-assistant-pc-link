@@ -10,8 +10,8 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "cslehel" }]
-keywords = ["home-assistant", "hacs", "mqtt", "parental-controls", "screen-time", "windows-service", "aster", "multiseat", "presence", "focus-mode"]
-dependencies = ["psutil>=5.9", "paho-mqtt>=2.0", "PyYAML>=6.0"]
+keywords = ["home-assistant", "hacs", "parental-controls", "screen-time", "windows-service", "aster", "multiseat", "presence", "focus-mode"]
+dependencies = ["psutil>=5.9", "PyYAML>=6.0"]
 
 [project.optional-dependencies]
 windows = ["pywin32>=306", "comtypes>=1.2", "nvidia-ml-py>=12.535", "zeroconf>=0.130"]

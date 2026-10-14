@@ -18,7 +18,7 @@ import os
 import re
 import sys
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))  # noqa: F821 - SPECPATH is provided by PyInstaller
 with open(os.path.join(ROOT, "pclink", "__init__.py"), encoding="utf-8") as fh:
@@ -64,15 +64,18 @@ HIDDEN = (
     + ["win32timezone", "win32serviceutil", "win32service", "servicemanager", "win32event", "win32ts",
        "win32net", "win32security", "win32profile", "win32process", "win32api", "win32con", "win32gui",
        "win32ui", "win32pdh", "win32print", "win32evtlogutil", "win32com", "win32com.client", "pythoncom",
-       "pywintypes", "psutil", "paho.mqtt.client", "yaml", "http.server", "winreg",
+       "pywintypes", "psutil", "yaml", "http.server", "winreg",
        "pynvml", "zeroconf", "clr", "PIL.Image"]
+    # Windows media controls (now playing); each namespace is its own compiled module
+    + collect_submodules("winrt")
 )
 EXCLUDES = ["tkinter", "matplotlib", "numpy", "pytest", "IPython"]
 COMMON = dict(pathex=[ROOT], binaries=[], hiddenimports=HIDDEN, hookspath=[], runtime_hooks=[],
               excludes=EXCLUDES, noarchive=False)
 
 a_cli = Analysis([os.path.join(SPECPATH, "entry_pclink.py")],  # noqa: F821
-                 datas=[(os.path.join(ROOT, "config.example.yaml"), ".")], **COMMON)
+                 # tzdata: the time zone database behind time_limits.time_zone (read by the service only)
+                 datas=[(os.path.join(ROOT, "config.example.yaml"), ".")] + collect_data_files("tzdata"), **COMMON)
 a_agent = Analysis([os.path.join(SPECPATH, "entry_agent.py")], datas=[], **COMMON)  # noqa: F821
 
 exe_cli = EXE(  # noqa: F821

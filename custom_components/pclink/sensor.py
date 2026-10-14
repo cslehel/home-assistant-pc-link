@@ -12,6 +12,7 @@ from homeassistant.util import dt as dt_util
 
 from .coordinator import PclinkCoordinator
 from .entity import PclinkEntity, async_setup_platform_entities
+from .rollup import async_setup_rollup_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,8 +30,9 @@ def _enum(cls, value: Optional[str]):
 
 
 class PclinkSensor(PclinkEntity, SensorEntity):
-    def __init__(self, coordinator: PclinkCoordinator, spec: dict[str, Any]) -> None:
-        super().__init__(coordinator, spec)
+    def _apply_spec(self) -> None:
+        super()._apply_spec()
+        spec = self.spec
         self._attr_device_class = _enum(SensorDeviceClass, spec.get("device_class"))
         self._attr_state_class = _enum(SensorStateClass, spec.get("state_class"))
         self._attr_native_unit_of_measurement = spec.get("unit") or None
@@ -38,8 +40,12 @@ class PclinkSensor(PclinkEntity, SensorEntity):
             self._attr_options = [str(o) for o in (spec.get("options") or [])]
             self._attr_native_unit_of_measurement = None
             self._attr_state_class = None
-        if spec.get("precision") is not None:
-            self._attr_suggested_display_precision = int(spec["precision"])
+        else:
+            self._attr_options = None
+        try:
+            self._attr_suggested_display_precision = int(spec["precision"]) if spec.get("precision") is not None else None
+        except (TypeError, ValueError):
+            self._attr_suggested_display_precision = None
         self._numeric = bool(self._attr_native_unit_of_measurement or self._attr_state_class) or (
             self._attr_device_class is not None and self._attr_device_class not in _NON_NUMERIC
         )
@@ -71,3 +77,4 @@ class PclinkSensor(PclinkEntity, SensorEntity):
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
     async_setup_platform_entities(hass, entry, async_add_entities, "sensor", PclinkSensor)
+    async_setup_rollup_entities(hass, entry, async_add_entities, "sensor")

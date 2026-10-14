@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import os
 import re
 import socket
 import subprocess
@@ -58,17 +59,22 @@ class PowerControl:
             log.info("(dry-run) shutdown.exe %s", " ".join(args))
             return
         creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        subprocess.run(["shutdown.exe", *args], check=False, creationflags=creation, timeout=15)
+        # the full path, like net.exe in logonblock.py: never whatever "shutdown.exe" the search path offers
+        exe = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "shutdown.exe")
+        try:
+            subprocess.run([exe, *args], check=False, creationflags=creation, timeout=15)
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.error("could not run shutdown.exe %s: %s", " ".join(args[:3]), exc)
 
     def shutdown(self, message: str = "Shutdown requested by Home Assistant", delay: Optional[int] = None) -> None:
         d = self.delay if delay is None else max(0, int(delay))
         log.warning("shutting down in %ss", d)
-        self._shutdown_exe(["/s", "/f", "/t", str(d), "/c", message[:512]])
+        self._shutdown_exe(["/s", "/f", "/t", str(d), "/c", str(message)[:512]])
 
     def reboot(self, message: str = "Reboot requested by Home Assistant", delay: Optional[int] = None) -> None:
         d = self.delay if delay is None else max(0, int(delay))
         log.warning("rebooting in %ss", d)
-        self._shutdown_exe(["/r", "/f", "/t", str(d), "/c", message[:512]])
+        self._shutdown_exe(["/r", "/f", "/t", str(d), "/c", str(message)[:512]])
 
     def cancel(self) -> None:
         self._shutdown_exe(["/a"])

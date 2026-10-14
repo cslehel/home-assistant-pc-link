@@ -19,7 +19,7 @@ def test_agent_roundtrip_with_token():
     received = []
     connects = []
     server = AgentServer("127.0.0.1", port, on_report=lambda sid, r: received.append(r),
-                         validate=lambda sid, tok: tok == "good",
+                         validate=lambda sid, tok: tok == "good", secret=lambda sid: "good",
                          on_connect=lambda sid, u, p: connects.append(sid))
     server.start()
     try:
@@ -52,7 +52,8 @@ def test_agent_roundtrip_with_token():
 
 def test_bad_token_rejected():
     port = free_port()
-    server = AgentServer("127.0.0.1", port, on_report=lambda *a: None, validate=lambda sid, tok: tok == "good")
+    server = AgentServer("127.0.0.1", port, on_report=lambda *a: None, validate=lambda sid, tok: tok == "good",
+                         secret=lambda sid: "good")
     server.start()
     try:
         client = AgentClient("127.0.0.1", port,

@@ -1,8 +1,62 @@
 """Plain data structures exchanged between the service, the agent and HA."""
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
+
+# Everything in a report comes from a process that runs as the monitored user,
+# so the service checks every field before using it: numbers must be finite
+# (and are clamped), text must be text (and is cut to a sane length).
+MAX_IDLE_SECONDS = 366 * 86400.0
+MAX_NAME_LENGTH = 260      # a Windows file name
+MAX_PATH_LENGTH = 1024
+MAX_TITLE_LENGTH = 512
+MAX_URL_LENGTH = 2048
+MAX_DOMAIN_LENGTH = 253
+MAX_LABEL_LENGTH = 256
+MAX_APP_ID_LENGTH = 128    # an AppUserModelID ("Chrome._crx_<32 letters>") or a browser's --app-id
+
+
+class ReportError(ValueError):
+    """A field of an agent report has the wrong type or is not a finite number."""
+
+
+def _text(value: Any, limit: int, field_name: str) -> str:
+    """``value`` as text of at most ``limit`` characters, without control characters."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ReportError(f"{field_name} is not text")
+    if len(value) > limit:
+        value = value[:limit]
+    return "".join(ch if ch >= " " and ch != "\x7f" else " " for ch in value)
+
+
+def _opt_text(value: Any, limit: int, field_name: str) -> Optional[str]:
+    return _text(value, limit, field_name) or None
+
+
+def _number(value: Any, low: float, high: float, field_name: str) -> float:
+    """A finite number clamped to ``low..high`` (booleans and text are not numbers)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ReportError(f"{field_name} is not a number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ReportError(f"{field_name} is not finite")
+    return min(max(number, low), high)
+
+
+def _opt_number(value: Any, low: float, high: float, field_name: str) -> Optional[float]:
+    return None if value is None else _number(value, low, high, field_name)
+
+
+def _flag(value: Any, field_name: str) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (bool, int)):   # Win32 calls hand back BOOLs: any non-zero integer is true
+        return bool(value)
+    raise ReportError(f"{field_name} is not a flag")
 
 
 @dataclass
@@ -14,6 +68,7 @@ class ForegroundInfo:
     exe: str = ""        # full path when readable, else ""
     title: str = ""
     fullscreen: bool = False
+    created: float = 0.0  # when the process started (epoch seconds; 0 = not known): tells a reused pid apart
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -22,12 +77,15 @@ class ForegroundInfo:
     def from_dict(cls, data: Optional[dict[str, Any]]) -> Optional["ForegroundInfo"]:
         if not data:
             return None
+        if not isinstance(data, dict):
+            raise ReportError("foreground is not an object")
         return cls(
-            pid=int(data.get("pid", 0) or 0),
-            name=str(data.get("name", "") or ""),
-            exe=str(data.get("exe", "") or ""),
-            title=str(data.get("title", "") or ""),
-            fullscreen=bool(data.get("fullscreen", False)),
+            pid=int(_number(data.get("pid") or 0, 0, 0xFFFFFFFF, "foreground.pid")),
+            name=_text(data.get("name"), MAX_NAME_LENGTH, "foreground.name").strip(),
+            exe=_text(data.get("exe"), MAX_PATH_LENGTH, "foreground.exe"),
+            title=_text(data.get("title"), MAX_TITLE_LENGTH, "foreground.title"),
+            fullscreen=_flag(data.get("fullscreen"), "foreground.fullscreen"),
+            created=_number(data.get("created") or 0.0, 0.0, 1e11, "foreground.created"),
         )
 
 
@@ -52,12 +110,14 @@ class MediaInfo:
     def from_dict(cls, data: Optional[dict[str, Any]]) -> Optional["MediaInfo"]:
         if not data:
             return None
+        if not isinstance(data, dict):
+            raise ReportError("media is not an object")
         return cls(
-            title=str(data.get("title", "") or ""),
-            artist=str(data.get("artist", "") or ""),
-            app=str(data.get("app", "") or ""),
-            status=str(data.get("status", "unknown") or "unknown"),
-            source=str(data.get("source", "") or ""),
+            title=_text(data.get("title"), MAX_LABEL_LENGTH, "media.title"),
+            artist=_text(data.get("artist"), MAX_LABEL_LENGTH, "media.artist"),
+            app=_text(data.get("app"), MAX_NAME_LENGTH, "media.app"),
+            status=_text(data.get("status"), 16, "media.status") or "unknown",
+            source=_text(data.get("source"), 16, "media.source"),
         )
 
     def label(self) -> str:
@@ -66,10 +126,10 @@ class MediaInfo:
         return self.title or ""
 
 
-def _opt_bool(value: Any) -> Optional[bool]:
+def _opt_bool(value: Any, field_name: str = "flag") -> Optional[bool]:
     if value is None:
         return None
-    return bool(value)
+    return _flag(value, field_name)
 
 
 @dataclass
@@ -104,6 +164,15 @@ class AgentReport:
     volume: Optional[int] = None                  # 0..100 of the session's default output
     muted: Optional[bool] = None
     agent_version: str = ""
+    host: Optional[str] = None                    # full lower-case host of ``url`` (``domain`` may be the registrable part)
+    agent_pid: Optional[int] = None               # the agent's own process id: a hint only, the service knows the real one
+    # a browser window without an address bar (an installed web app, an --app window) whose page
+    # address could not be read: ``domain`` / ``host``, if any, are only a guess (title, start address)
+    site_unknown: bool = False
+    app_id: Optional[str] = None                  # such a window's app identity (AppUserModelID / --app-id)
+    # set by the service, never taken from the agent: why the report was refused (see from_dict)
+    invalid: Optional[str] = None
+    received: float = 0.0   # monotonic time the service received it (staleness never uses the agent's ``ts``)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -128,36 +197,65 @@ class AgentReport:
             "volume": self.volume,
             "muted": self.muted,
             "agent_version": self.agent_version,
+            "host": self.host,
+            "agent_pid": self.agent_pid,
+            "site_unknown": self.site_unknown,
+            "app_id": self.app_id,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AgentReport":
-        def _opt_float(key: str) -> Optional[float]:
-            v = data.get(key)
-            return None if v is None else float(v)
+        """Build a report from what an agent sent.
 
-        volume = data.get("volume")
+        The sender runs as the monitored user, so nothing is taken on trust:
+        a field of the wrong type or a number that is not finite makes the
+        whole report ``invalid`` (the service drops it and flags the user);
+        numbers are clamped and text is cut to a sane length.  ``ts`` is only
+        informative - the service stamps a report when it arrives."""
+        try:
+            return cls._parse(data)
+        except (ReportError, TypeError, ValueError, OverflowError, AttributeError, KeyError) as exc:
+            session_id = data.get("session_id") if isinstance(data, dict) else None
+            session_id = session_id if isinstance(session_id, int) and not isinstance(session_id, bool) else -1
+            return cls(session_id=session_id, ts=0.0, invalid=str(exc)[:200] or type(exc).__name__)
+
+    @classmethod
+    def _parse(cls, data: dict[str, Any]) -> "AgentReport":
+        if not isinstance(data, dict):
+            raise ReportError("report is not an object")
+
+        def idle(key: str) -> Optional[float]:
+            return _opt_number(data.get(key), 0.0, MAX_IDLE_SECONDS, key)
+
+        volume = _opt_number(data.get("volume"), 0, 100, "volume")
+        agent_pid = _opt_number(data.get("agent_pid"), 0, 0xFFFFFFFF, "agent_pid")
+        domain = _text(data.get("domain"), MAX_DOMAIN_LENGTH, "domain").strip().lower()
         return cls(
-            session_id=int(data["session_id"]),
-            ts=float(data.get("ts", 0.0)),
-            idle_seconds=float(data.get("idle_seconds", 0.0) or 0.0),
-            locked=bool(data.get("locked", False)),
+            session_id=int(_number(data.get("session_id", -1), -1, 0xFFFFFFFF, "session_id")),
+            ts=_number(data.get("ts") or 0.0, 0.0, 1e11, "ts"),
+            idle_seconds=idle("idle_seconds") or 0.0,
+            locked=_flag(data.get("locked"), "locked"),
             foreground=ForegroundInfo.from_dict(data.get("foreground")),
-            url=data.get("url"),
-            domain=data.get("domain"),
-            audio_active=bool(data.get("audio_active", False)),
-            input_idle_seconds=_opt_float("input_idle_seconds"),
-            controller_idle_seconds=_opt_float("controller_idle_seconds"),
-            display_state=(str(data["display_state"]) if data.get("display_state") else None),
-            user_present=_opt_bool(data.get("user_present")),
-            screensaver=bool(data.get("screensaver", False)),
-            fullscreen_d3d=bool(data.get("fullscreen_d3d", False)),
-            display_required=bool(data.get("display_required", False)),
-            presentation_mode=bool(data.get("presentation_mode", False)),
+            url=_opt_text(data.get("url"), MAX_URL_LENGTH, "url"),
+            domain=domain or None,
+            audio_active=_flag(data.get("audio_active"), "audio_active"),
+            input_idle_seconds=idle("input_idle_seconds"),
+            controller_idle_seconds=idle("controller_idle_seconds"),
+            display_state=_opt_text(data.get("display_state"), 16, "display_state"),
+            user_present=_opt_bool(data.get("user_present"), "user_present"),
+            screensaver=_flag(data.get("screensaver"), "screensaver"),
+            fullscreen_d3d=_flag(data.get("fullscreen_d3d"), "fullscreen_d3d"),
+            display_required=_flag(data.get("display_required"), "display_required"),
+            presentation_mode=_flag(data.get("presentation_mode"), "presentation_mode"),
             media=MediaInfo.from_dict(data.get("media")),
-            volume=None if volume is None else int(volume),
-            muted=_opt_bool(data.get("muted")),
-            agent_version=str(data.get("agent_version", "") or ""),
+            volume=None if volume is None else int(round(volume)),
+            muted=_opt_bool(data.get("muted"), "muted"),
+            agent_version=_text(data.get("agent_version"), 32, "agent_version"),
+            host=_text(data.get("host"), MAX_DOMAIN_LENGTH, "host").strip().lower() or None,
+            agent_pid=None if agent_pid is None else int(agent_pid),
+            # older agents do not send these: a site they could not read is simply "no site"
+            site_unknown=_flag(data.get("site_unknown"), "site_unknown"),
+            app_id=_text(data.get("app_id"), MAX_APP_ID_LENGTH, "app_id").strip() or None,
         )
 
     def signature(self) -> tuple:
@@ -178,6 +276,8 @@ class AgentReport:
             (media.title, media.artist, media.status) if media else None,
             self.volume,
             self.muted,
+            self.site_unknown,
+            self.app_id,
         )
 
 
@@ -230,6 +330,10 @@ class Activity:
     title: Optional[str] = None
     domain: Optional[str] = None
     url: Optional[str] = None
+    # a browser window whose page address the agent could not read (see AgentReport.site_unknown):
+    # it is never taken for an allow-listed site, whatever ``domain`` guesses
+    site_unknown: bool = False
+    app_id: Optional[str] = None
 
     @property
     def is_active(self) -> bool:

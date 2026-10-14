@@ -19,6 +19,7 @@ WTS_CURRENT_SERVER_HANDLE = 0
 WTS_SESSION_INFO_EX = 25
 _STATE_NAMES = {0: "active", 1: "connected", 2: "connected", 3: "other", 4: "disconnected", 5: "idle",
                 6: "listen", 7: "reset", 8: "down", 9: "init"}
+_NO_USER_STATES = {"listen", "reset", "down", "init"}   # never a logged-on user: not even asked about
 
 # WTS_SESSION_* event types delivered through SERVICE_CONTROL_SESSIONCHANGE
 WTS_CONSOLE_CONNECT = 1
@@ -65,6 +66,19 @@ class WTSINFOEXW(ctypes.Structure):
     _fields_ = [("Level", wintypes.DWORD), ("Data", WTSINFOEX_LEVEL_W)]
 
 
+class SessionQueryError(RuntimeError):
+    """Windows could not list the sessions (or one of them) right now."""
+
+
+ERROR_FILE_NOT_FOUND = 2
+ERROR_CTX_WINSTATION_NOT_FOUND = 7022
+
+
+def _session_gone(exc: Exception) -> bool:
+    """Did the query fail because the session ended between listing and asking?"""
+    return getattr(exc, "winerror", None) in (ERROR_FILE_NOT_FOUND, ERROR_CTX_WINSTATION_NOT_FOUND)
+
+
 def _filetime_to_unix(value: int) -> Optional[float]:
     if not value:
         return None
@@ -89,6 +103,8 @@ class WindowsSessions:
         self._api.WTSFreeMemory.argtypes = [ctypes.c_void_p]
         self._api.WTSFreeMemory.restype = None
         self.lock_flag_inverted = lock_flag_inverted  # Windows 7 reports LOCK/UNLOCK swapped
+        self._known: dict[int, SessionInfo] = {}   # the sessions of the last list, by id
+        self._failed: set[int] = set()              # sessions that could not be queried (logged once)
 
     # -- queries ----------------------------------------------------------------
     def _query_ex(self, session_id: int) -> Optional[dict[str, Any]]:
@@ -125,42 +141,76 @@ class WindowsSessions:
             self._api.WTSFreeMemory(buf)
 
     def list_sessions(self) -> list[SessionInfo]:
+        """Every session with a user in it.
+
+        Raises :class:`SessionQueryError` when Windows could not list them: an
+        empty list would read as "everybody logged off" (agents dropped, logged-off
+        events), so the caller keeps what it last knew instead.  A single session
+        that cannot be queried keeps what was last known about it (and is left out
+        when nothing was), the others are listed as usual."""
         wts = self._wts
         out: list[SessionInfo] = []
         try:
             raw = wts.WTSEnumerateSessions(WTS_CURRENT_SERVER_HANDLE)
         except Exception as exc:  # noqa: BLE001
-            log.error("WTSEnumerateSessions failed: %s", exc)
-            return out
+            raise SessionQueryError(f"WTSEnumerateSessions failed: {exc}") from exc
+        known: dict[int, SessionInfo] = getattr(self, "_known", {})
+        failed: set[int] = getattr(self, "_failed", set())
+        current: dict[int, SessionInfo] = {}
         for entry in raw:
             sid = int(entry["SessionId"])
             if sid == 0:
                 continue  # session 0 hosts services only
-            ex = None
+            if _STATE_NAMES.get(int(entry.get("State", -1)), "other") in _NO_USER_STATES:
+                continue  # a listener or a session being set up or torn down: nobody in it
             try:
-                ex = self._query_ex(sid)
-            except Exception as exc:  # noqa: BLE001
-                log.debug("WTSINFOEX failed for session %s: %s", sid, exc)
-            user = (ex or {}).get("user") or ""
-            domain = (ex or {}).get("domain") or ""
-            if not user:
-                try:
-                    user = wts.WTSQuerySessionInformation(WTS_CURRENT_SERVER_HANDLE, sid, wts.WTSUserName) or ""
-                    domain = wts.WTSQuerySessionInformation(WTS_CURRENT_SERVER_HANDLE, sid, wts.WTSDomainName) or ""
-                except Exception:  # noqa: BLE001
-                    user = ""
-            if not user:
-                continue  # logon screen / no user
-            state = _STATE_NAMES.get(int(entry["State"]), "other")
-            out.append(
-                SessionInfo(
-                    session_id=sid, user=user.lower(), domain=domain,
-                    station=str(entry.get("WinStationName") or (ex or {}).get("station") or ""),
-                    state=state, locked=(ex or {}).get("locked"), idle_seconds=(ex or {}).get("idle_seconds"),
-                    logon_time=(ex or {}).get("logon_time"),
-                )
-            )
+                info = self._session(entry, sid)
+            except SessionQueryError as exc:
+                # One session that cannot be asked about must not hide all the others; it
+                # keeps what was last known about it (dropping it would read as a logoff).
+                if sid not in failed:
+                    failed.add(sid)
+                    log.warning("%s; %s", exc, "keeping what was known about it" if sid in known
+                                else "leaving it out for now")
+                info = known.get(sid)
+            else:
+                failed.discard(sid)
+            if info is not None:
+                current[sid] = info
+                out.append(info)
+        self._known = current
+        self._failed = failed & {int(e["SessionId"]) for e in raw}
         return out
+
+    def _session(self, entry: Any, sid: int) -> Optional[SessionInfo]:
+        """One listed session as a :class:`SessionInfo`; None when nobody is logged on to it.
+        Raises :class:`SessionQueryError` when Windows would not tell."""
+        wts = self._wts
+        ex = None
+        try:
+            ex = self._query_ex(sid)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("WTSINFOEX failed for session %s: %s", sid, exc)
+        user = (ex or {}).get("user") or ""
+        domain = (ex or {}).get("domain") or ""
+        if not user:
+            try:
+                user = wts.WTSQuerySessionInformation(WTS_CURRENT_SERVER_HANDLE, sid, wts.WTSUserName) or ""
+                domain = wts.WTSQuerySessionInformation(WTS_CURRENT_SERVER_HANDLE, sid, wts.WTSDomainName) or ""
+            except Exception as exc:  # noqa: BLE001
+                if ex is None and not _session_gone(exc):
+                    # neither query answered: "nobody there" cannot be told from "could not ask"
+                    raise SessionQueryError(f"session {sid} could not be queried: {exc}") from exc
+                user = ""
+        if not user:
+            return None  # logon screen / no user
+        state = _STATE_NAMES.get(int(entry["State"]), "other")
+        return SessionInfo(
+            session_id=sid, user=user.lower(), domain=domain,
+            station=str(entry.get("WinStationName") or (ex or {}).get("station") or ""),
+            state=state, locked=(ex or {}).get("locked"), idle_seconds=(ex or {}).get("idle_seconds"),
+            logon_time=(ex or {}).get("logon_time"),
+        )
 
     # -- control -----------------------------------------------------------------
     def logoff(self, session_id: int, wait: bool = False) -> None:

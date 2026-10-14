@@ -70,6 +70,7 @@ focus:
     allow:
       example: '["docs.google.com", "winword.exe"]'
       selector: {object: {}}
+    pin: *pin
 focus_off:
   fields:
     device_id: *device
@@ -106,8 +107,63 @@ rule_limit:
       selector: {text: {}}
     minutes:
       example: 30
-      selector: {number: {min: 0, max: 1440, unit_of_measurement: min}}
+      selector: {number: {min: 0, max: 10080, unit_of_measurement: min}}
+    scope:
+      default: today
+      selector: {select: {options: [today, weekly]}}
     pin: *pin
+set_rule:
+  fields:
+    device_id: *device
+    user: *user
+    rule:
+      required: true
+      example: Roblox
+      selector: {text: {}}
+    apps:
+      example: "[RobloxPlayerBeta.exe]"
+      selector: {text: {multiple: true}}
+    sites:
+      example: "[roblox.com]"
+      selector: {text: {multiple: true}}
+    categories:
+      example: "[video]"
+      selector: {text: {multiple: true}}
+    daily_limit_minutes:
+      example: "{weekdays: 30, weekend: 60}"
+      selector: {object: {}}
+    weekly_limit_minutes:
+      example: 300
+      selector: {object: {}}
+    allowed_hours:
+      example: "16:00-19:00"
+      selector: {object: {}}
+    blocked:
+      selector: {boolean: {}}
+    rule_action:
+      selector: {select: {options: [close, warn]}}
+    message:
+      selector: {text: {}}
+    pin: *pin
+remove_rule:
+  fields:
+    device_id: *device
+    user: *user
+    rule:
+      required: true
+      example: Roblox
+      selector: {text: {}}
+    pin: *pin
+display:
+  fields:
+    device_id: *device
+    user:
+      example: kevin
+      selector: {text: {}}
+    enabled:
+      required: true
+      default: false
+      selector: {boolean: {}}
 breaks:
   fields:
     device_id: *device
@@ -226,6 +282,54 @@ parent_present:
       required: true
       default: true
       selector: {boolean: {}}
+    pin: *pin
+block_item:
+  fields:
+    device_id: *device
+    user: *user
+    item:
+      required: true
+      example: youtube.com
+      selector: {text: {}}
+unblock_item:
+  fields:
+    device_id: *device
+    user: *user
+    item:
+      required: true
+      example: youtube.com
+      selector: {text: {}}
+    pin: *pin
+usage_report:
+  fields:
+    device_id: *device
+    user: *user
+    hours:
+      default: 10
+      selector: {number: {min: 1, max: 336, unit_of_measurement: h}}
+answer_time_request:
+  fields:
+    device_id: *device
+    user: *user
+    approve:
+      required: true
+      default: true
+      selector: {boolean: {}}
+    minutes:
+      example: 30
+      selector: {number: {min: 1, max: 1440, unit_of_measurement: min}}
+    pin: *pin
+set_profile:
+  fields:
+    device_id: *device
+    user:
+      example: kevin
+      selector: {text: {}}
+    profile:
+      required: true
+      example: holiday
+      selector: {text: {}}
+    pin: *pin
 reload_config:
   fields:
     device_id: *device

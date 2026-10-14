@@ -2,10 +2,17 @@
 # Windows service, session control, tray icon, UI Automation:
 pywin32>=306
 comtypes>=1.2
+# Time zone database for time_limits.time_zone (Windows has none Python can read):
+tzdata>=2024.1
 # NVIDIA GPU metrics (optional; harmless if no NVIDIA card):
 nvidia-ml-py>=12.535
 # mDNS announcement so the Home Assistant integration discovers the PC (optional):
 zeroconf>=0.130
 # Optional extras (uncomment to enable):
 # Pillow>=10.0      # JPEG screenshots (PNG works without it)
-# winsdk>=1.0       # exact now-playing info from Windows media controls
+# exact now-playing info from Windows media controls (also media playing in a browser tab):
+# winrt-runtime>=3.0
+# winrt-Windows.Media.Control>=3.0
+# winrt-Windows.Foundation>=3.0
+# winrt-Windows.Foundation.Collections>=3.0
+# winrt-Windows.Storage.Streams>=3.0

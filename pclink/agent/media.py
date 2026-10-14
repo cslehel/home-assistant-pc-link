@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 import sys
+import time
 from typing import Optional
 
 from ..models import ForegroundInfo, MediaInfo
@@ -73,15 +74,48 @@ def parse_media_title(app: str, title: str) -> Optional[MediaInfo]:
     return None
 
 
+# GlobalSystemMediaTransportControlsSessionPlaybackStatus:
+# 0 Closed, 1 Opened, 2 Changing, 3 Stopped, 4 Playing, 5 Paused.  "Changing" is a
+# transition (track change, seek), not playback.
+GSMTC_STATUS = {0: "stopped", 1: "stopped", 2: "unknown", 3: "stopped", 4: "playing", 5: "paused"}
+
+
+# Which program a media session belongs to, from its "app user model id".  Browsers
+# publish the page's media (Spotify web, YouTube ...) under their own id.
+_SESSION_APPS = (("308046b0af4a39cb", "Firefox"), ("firefox", "Firefox"), ("msedge", "Edge"), ("chrome", "Chrome"),
+                 ("brave", "Brave"), ("opera", "Opera"), ("vivaldi", "Vivaldi"), ("spotify", "Spotify"),
+                 ("zunemusic", "Media Player"), ("zunevideo", "Films & TV"), ("vlc", "VLC"))
+
+
+def session_app_name(app_id: str) -> str:
+    """A readable name for a media session's source (pure; unit-tested)."""
+    low = (app_id or "").lower()
+    for needle, name in _SESSION_APPS:
+        if needle in low:
+            return name
+    return app_id or ""
+
+
+GSMTC_TIMEOUT_SECONDS = 3.0   # one read of the media controls; longer than this counts as a failure
+
+
+def gsmtc_backoff(failures: int) -> float:
+    """Seconds to wait after the n-th consecutive failed read: 30 s doubling up to 10 min."""
+    return float(min(600, 30 * 2 ** max(0, min(failures, 10) - 1)))
+
+
 class MediaInfoReader:
     def __init__(self, enabled: bool = True, media_apps: Optional[list[str]] = None, browsers: Optional[list[str]] = None):
         self.enabled = enabled
         self.media_apps = {m.lower() for m in (media_apps or [])}
         self.browsers = {b.lower() for b in (browsers or [])}
         self._gsmtc = None
-        self._gsmtc_failed = False
+        self._gsmtc_failed = False     # True while the last read failed (backing off)
+        self._gsmtc_failures = 0
+        self._gsmtc_retry_at = 0.0
         self._last: Optional[MediaInfo] = None
         self._last_at = 0.0
+        self._loop = None              # the event loop the GSMTC reads run on (made on first use)
         if enabled and _IS_WIN:
             self._init_gsmtc()
 
@@ -112,26 +146,58 @@ class MediaInfoReader:
 
     # -- GSMTC -------------------------------------------------------------------------------
     def _read_gsmtc(self) -> Optional[MediaInfo]:
-        if self._gsmtc_failed:
+        # One failed read (a media session closing mid-call is enough) must not switch the
+        # precise source off for good: back off, then try again.
+        now = time.monotonic()
+        if now < self._gsmtc_retry_at:
             return None
         try:
             import asyncio
 
-            return asyncio.run(self._gsmtc_async())
+            # One event loop for the life of the agent (asyncio.run() built and tore down a
+            # new one every few seconds), and a deadline: these calls go to another process
+            # and have been seen never to answer, which stopped the agent's whole poll.
+            if self._loop is None or self._loop.is_closed():
+                self._loop = asyncio.new_event_loop()
+            info = self._loop.run_until_complete(asyncio.wait_for(self._gsmtc_async(), GSMTC_TIMEOUT_SECONDS))
+            self._gsmtc_failures = 0
+            self._gsmtc_failed = False
+            return info
         except Exception as exc:  # noqa: BLE001
-            log.debug("GSMTC read failed: %s", exc)
+            self._gsmtc_failures += 1
+            delay = gsmtc_backoff(self._gsmtc_failures)
+            self._gsmtc_retry_at = now + delay
             self._gsmtc_failed = True
+            if self._gsmtc_failures in (1, 5):
+                log.debug("GSMTC read failed (%d): %s; retrying in %d s", self._gsmtc_failures, exc, int(delay))
             return None
 
     async def _gsmtc_async(self) -> Optional[MediaInfo]:
         Manager = self._gsmtc.GlobalSystemMediaTransportControlsSessionManager
         manager = await Manager.request_async()
+
+        def status_of(candidate) -> str:
+            playback = candidate.get_playback_info()
+            if playback is None:   # the session is closing
+                return "stopped"
+            code = playback.playback_status
+            return GSMTC_STATUS.get(int(getattr(code, "value", code)), "unknown")
+
         session = manager.get_current_session()
+        status = status_of(session) if session is not None else "stopped"
+        if status != "playing":
+            # Windows' "current" session is the one last interacted with; something else may be playing.
+            try:
+                for other in manager.get_sessions():
+                    if status_of(other) == "playing":
+                        session, status = other, "playing"
+                        break
+            except Exception:  # noqa: BLE001 - the list is a convenience; keep the current session
+                pass
         if session is None:
             return None
         props = await session.try_get_media_properties_async()
-        info = session.get_playback_info()
-        status_code = int(getattr(info.playback_status, "value", info.playback_status))
-        status = {0: "stopped", 1: "stopped", 2: "playing", 3: "stopped", 4: "playing", 5: "paused"}.get(status_code, "unknown")
-        app = str(session.source_app_user_model_id or "")
+        if props is None:
+            return None
+        app = session_app_name(str(session.source_app_user_model_id or ""))
         return MediaInfo(title=str(props.title or ""), artist=str(props.artist or ""), app=app, status=status, source="gsmtc")

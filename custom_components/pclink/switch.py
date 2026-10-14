@@ -18,10 +18,10 @@ class PclinkSwitch(PclinkEntity, SwitchEntity):
         return None if raw is None else bool(raw)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        await self.async_send("ON")
+        await self.async_send("ON", shown=True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        await self.async_send("OFF")
+        await self.async_send("OFF", shown=False)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:

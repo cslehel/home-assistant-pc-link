@@ -3,6 +3,8 @@
 USB devices are enumerated with SetupAPI through ctypes (no subprocess, no
 WMI, a few milliseconds), printers through ``win32print``.  Both are polled
 on their own slow intervals and cached; both return empty results off Windows.
+The polling happens on a worker thread: a print spooler that does not answer
+or a slow card reader must never hold up the service's main loop.
 """
 from __future__ import annotations
 
@@ -10,10 +12,12 @@ import ctypes
 import logging
 import re
 import sys
+import threading
 import time
 from typing import Any, Callable, Optional
 
 from .config import TelemetryConfig
+from .telemetry import Background
 
 log = logging.getLogger(__name__)
 
@@ -97,7 +101,8 @@ def usb_devices() -> list[dict[str, Any]]:
             hwid = prop(_SPDRP_HARDWAREID)
             needed = ctypes.c_uint32(0)
             inst = ""
-            if setupapi.SetupDiGetDeviceInstanceIdW(hdev, ctypes.byref(info), buf, ctypes.sizeof(buf), ctypes.byref(needed)):
+            # this size is in characters, not bytes
+            if setupapi.SetupDiGetDeviceInstanceIdW(hdev, ctypes.byref(info), buf, len(buf), ctypes.byref(needed)):
                 inst = buf.value
             m = _VID_PID_RE.search(hwid or inst)
             lname = (name or "").lower()
@@ -114,6 +119,23 @@ def usb_devices() -> list[dict[str, Any]]:
     return out
 
 
+def drive_entry(mount: str, fstype: Optional[str], opts: str, usage: Optional[tuple[int, int]]) -> Optional[dict[str, Any]]:
+    """One removable / optical drive as reported, or None for a fixed one (pure; unit-tested).
+
+    ``media`` says whether something is in it: a card reader's empty slots and
+    an optical drive without a disc have a drive letter but no file system.
+    """
+    opts = (opts or "").lower()
+    if "removable" not in opts and "cdrom" not in opts:
+        return None
+    entry: dict[str, Any] = {"mount": mount, "fstype": fstype or None, "kind": "cdrom" if "cdrom" in opts else "removable",
+                             "media": bool(fstype) or usage is not None}
+    if usage is not None:
+        entry["total_gb"] = round(usage[0] / 1024 ** 3, 1)
+        entry["free_gb"] = round(usage[1] / 1024 ** 3, 1)
+    return entry
+
+
 def removable_drives() -> list[dict[str, Any]]:
     try:
         import psutil
@@ -125,14 +147,15 @@ def removable_drives() -> list[dict[str, Any]]:
             opts = (p.opts or "").lower()
             if "removable" not in opts and "cdrom" not in opts:
                 continue
-            entry: dict[str, Any] = {"mount": p.mountpoint, "fstype": p.fstype or None, "kind": "cdrom" if "cdrom" in opts else "removable"}
+            usage = None
             try:
                 du = psutil.disk_usage(p.mountpoint)
-                entry["total_gb"] = round(du.total / 1024 ** 3, 1)
-                entry["free_gb"] = round(du.free / 1024 ** 3, 1)
-            except Exception:  # noqa: BLE001
+                usage = (du.total, du.free)
+            except Exception:  # noqa: BLE001 - no media in the drive
                 pass
-            out.append(entry)
+            entry = drive_entry(p.mountpoint, p.fstype, opts, usage)
+            if entry is not None:
+                out.append(entry)
     except Exception as exc:  # noqa: BLE001
         log.debug("disk_partitions failed: %s", exc)
     return out
@@ -201,23 +224,55 @@ class DeviceMonitor:
         self._printers: dict[str, Any] = {}
         self._printers_at = 0.0
         self._usb_seen = False
+        self._usb_empty_pending = False
+        self._refresh_lock = threading.Lock()
+        # The enumeration (SetupAPI, the print spooler) runs on its own thread; the main
+        # loop only ever reads the last result.
+        self._worker = Background("devices", self.refresh, lambda: self.POLL_SECONDS, initial={}, min_interval=1.0)
+
+    RECHECK_EMPTY_SECONDS = 10.0
+    POLL_SECONDS = 5.0           # how often the worker looks whether one of the intervals is over
+    FIRST_RESULT_SECONDS = 1.0   # the first snapshot waits this long at most for the first enumeration
 
     def update_config(self, cfg: TelemetryConfig) -> None:
         self.cfg = cfg
 
+    def stop(self) -> None:
+        self._worker.stop()
+
     def snapshot(self) -> dict[str, Any]:
+        """The last enumeration (never blocks beyond a short wait for the very first one)."""
+        return dict(self._worker.value(wait_first=self.FIRST_RESULT_SECONDS) or {})
+
+    def refresh(self) -> dict[str, Any]:
+        """Enumerate whatever is due and return the snapshot (worker thread; tests call it directly)."""
+        with self._refresh_lock:
+            return self._refresh()
+
+    def _refresh(self) -> dict[str, Any]:
         snap: dict[str, Any] = {}
         now = time.monotonic()
         if self.cfg.usb_devices:
             if now - self._usb_at >= self.cfg.devices_interval_seconds or not self._usb_seen:
                 new = usb_devices()
                 drives = removable_drives()
-                if self._usb_seen and {d["instance_id"] for d in new} != {d["instance_id"] for d in self._usb}:
-                    self._emit("usb_changed", {"count": len(new)})
-                self._usb, self._drives, self._usb_at, self._usb_seen = new, drives, now, True
+                if self._usb_seen and self._usb and not new and not self._usb_empty_pending:
+                    # "Everything unplugged at once" is far more likely a failed enumeration
+                    # (which also returns an empty list).  Keep the last list and look again
+                    # shortly; only a second empty result is believed.  Otherwise one hiccup
+                    # raises usb_changed twice (all gone, all back).
+                    self._usb_empty_pending = True
+                    self._usb_at = now - self.cfg.devices_interval_seconds + self.RECHECK_EMPTY_SECONDS
+                    self._drives = drives
+                else:
+                    self._usb_empty_pending = False
+                    if self._usb_seen and {d["instance_id"] for d in new} != {d["instance_id"] for d in self._usb}:
+                        self._emit("usb_changed", {"count": len(new)})
+                    self._usb, self._drives, self._usb_at, self._usb_seen = new, drives, now, True
             snap["usb_devices"] = len([d for d in self._usb if not d["hub"]])
             snap["usb_device_list"] = {"devices": self._usb, "hubs": len([d for d in self._usb if d["hub"]])}
-            snap["removable_drives"] = len(self._drives)
+            # empty card-reader slots and optical drives without a disc are listed, not counted
+            snap["removable_drives"] = len([d for d in self._drives if d.get("media", True)])
             snap["removable_drive_list"] = {"drives": self._drives}
         if self.cfg.printers:
             if now - self._printers_at >= self.cfg.printers_interval_seconds or not self._printers:

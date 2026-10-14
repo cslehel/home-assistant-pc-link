@@ -16,10 +16,15 @@ class PclinkText(PclinkEntity, TextEntity):
     _attr_native_max = 255
 
     def __init__(self, coordinator: PclinkCoordinator, spec: dict[str, Any]) -> None:
-        super().__init__(coordinator, spec)
-        self._password = bool(spec.get("password"))
-        self._attr_mode = TextMode.PASSWORD if self._password else TextMode.TEXT
         self._last: str = ""
+        super().__init__(coordinator, spec)
+
+    def _apply_spec(self) -> None:
+        super()._apply_spec()
+        self._password = bool(self.spec.get("password"))
+        self._attr_mode = TextMode.PASSWORD if self._password else TextMode.TEXT
+        if self._password:
+            self._last = ""
 
     @property
     def native_value(self) -> Optional[str]:
@@ -29,7 +34,12 @@ class PclinkText(PclinkEntity, TextEntity):
         return self._last
 
     async def async_set_value(self, value: str) -> None:
-        await self.async_send(value)
+        # what was typed is kept on the entity (a PIN never is) once the PC took it; a text the
+        # PC reports a value for shows the typed one until the PC's next state
+        if self.spec.get("value") and not self._password:
+            await self.async_send(value, shown=value)
+        else:
+            await self.async_send(value)
         self._last = "" if self._password else value
         self.async_write_ha_state()
 

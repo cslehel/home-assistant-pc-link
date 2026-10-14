@@ -97,3 +97,23 @@ def test_human_minutes():
     assert human_minutes(None) == "unlimited"
     assert human_minutes(90 * 60) == "1 h 30 min"
     assert human_minutes(5 * 60) == "5 min"
+
+
+def test_parse_windows_split_keeps_the_after_midnight_part_for_the_next_day():
+    from pclink.util import parse_windows_split
+    assert parse_windows_split("16:00-01:00") == ([(960, 1440)], [(0, 60)])
+    assert parse_windows_split("07:00-21:00") == ([(420, 1260)], [])
+    assert parse_windows_split(["07:00-08:00", "22:00-02:00"]) == ([(420, 480), (1320, 1440)], [(0, 120)])
+    assert parse_windows_split("22:00-00:00") == ([(1320, 1440)], [])
+    assert parse_windows_split(None) == ([], []) and parse_windows_split("never") == ([(0, 0)], [])
+    # parse_windows still folds both parts into the same day
+    assert parse_windows("16:00-01:00") == [(0, 60), (960, 1440)]
+
+
+def test_window_with_equal_start_and_end_is_rejected():
+    assert parse_windows("00:00-00:00") == [(0, 1440)]
+    assert parse_windows("00:00-24:00") == [(0, 1440)]
+    with pytest.raises(ValueError):
+        parse_windows("12:00-12:00")
+    with pytest.raises(ValueError):
+        parse_windows("07:00-09:00, 21:00-21:00")

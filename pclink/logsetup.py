@@ -26,5 +26,4 @@ def setup_logging(path: str, level: str = "INFO", filename: str = "pclink.log", 
         sh = logging.StreamHandler(sys.stdout)
         sh.setFormatter(fmt)
         root.addHandler(sh)
-    logging.getLogger("paho").setLevel(logging.WARNING)
     logging.getLogger("comtypes").setLevel(logging.WARNING)

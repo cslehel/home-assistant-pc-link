@@ -32,6 +32,8 @@ concurrency:
 jobs:
   build:
     uses: ./.github/workflows/build.yml
+    with:
+      release: true   # also runs the signing job (environment "release-signing")
     secrets: inherit
 
   release:
@@ -41,7 +43,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
       - name: Work out the tag and check every version number
         id: tag
@@ -66,11 +68,14 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Release notes
-        run: python3 scripts/release_notes.py "${{ steps.tag.outputs.tag }}" > notes.md
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: python3 scripts/release_notes.py "$TAG" > notes.md
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
-          name: ${{ needs.build.outputs.artifact }}
+          # the zip from the signing job (signed when a certificate is configured)
+          name: ${{ needs.build.outputs.release_artifact }}
 
       - name: Publish
         env:

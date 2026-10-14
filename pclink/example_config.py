@@ -26,24 +26,12 @@ EMBEDDED = r'''# ===============================================================
 # Validate with:  pclink.exe check-config
 # (From a Python install use "python -m pclink" in place of "pclink.exe".)
 # The service watches this file and applies most changes without a restart
-# (mqtt / storage / logging / ports need one - the log tells you).
+# (storage / logging / ports need one - the log tells you).
 # ======================================================================
 
-# Home Assistant can be reached two ways (docs/HOMEASSISTANT.md):
-#  - the PC Link integration (recommended, no broker): enable `api` below
-#    (`pclink.exe api-token` prints a ready-made block), or
-#  - MQTT discovery: point `mqtt` at your broker.
-mqtt:
-  enabled: true                  # false: no broker at all (integration only)
-  discovery: true                # false: keep the broker for other PCs but let the integration create the entities
-  host: homeassistant.local      # your MQTT broker (usually the HA host)
-  port: 1883
-  username: pclink               # broker credentials (recommended)
-  password: change-me
-  # tls: true
-  # tls_ca: C:\ProgramData\PCLink\ca.crt
-  discovery_prefix: homeassistant # must match HA's MQTT discovery prefix
-  base_topic: pclink             # PCs sharing a base topic see each other (fleet roll-up)
+# Home Assistant reaches this PC through the PC Link integration, which talks
+# to the local API: enable `api` below (`pclink.exe api-token` prints a
+# ready-made block). See docs/HOMEASSISTANT.md.
 
 device:
   # name: Family-PC              # defaults to the Windows computer name
@@ -83,17 +71,25 @@ time_limits:
   block_method: logon_hours
   manage_unknown_users: false    # apply default_policy to users not listed below
   week_start: mon                # first day of the week for weekly budgets
-  shared_budget: false           # true -> minutes on *other* PCs (same base_topic) count too
+  # time_zone: Europe/Budapest   # reckon days, allowed hours and bedtimes in this zone, whatever
+  #                                the PC's own time zone is set to (a standard user may change that)
+  shared_budget: false           # true -> minutes on *other* PCs count too (the Home Assistant
+                                 # integration passes on the other PCs' usage)
 
   # Parent PIN: Home Assistant may only *loosen* limits (grant minutes, raise a
-  # limit, pause a limit, unblock, end focus mode, extend bedtime, screenshots)
-  # after the PIN was entered in the "Parent PIN" text entity (valid for
-  # pin_timeout_seconds) or passed as "pin" in a JSON command. Tightening never
-  # needs it. Use parent_pin_sha256 (pclink.exe pin-hash 1234) to avoid a
-  # plain-text PIN in this file.
+  # limit, pause a limit, unblock, start a focus period that pauses the budget,
+  # end focus mode, extend bedtime, screenshots) after the PIN was entered in the
+  # "Parent PIN" text entity (valid for pin_timeout_seconds) or passed as "pin"
+  # in a JSON command (for that one command). Tightening never needs it. Always
+  # put the PIN in quotes. Use parent_pin_hash (pclink.exe pin-hash 1234) to
+  # avoid a plain-text PIN in this file.
   # parent_pin: "1234"
+  # parent_pin_hash: pbkdf2_sha256$200000$...$...
   # pin_timeout_seconds: 300
-  # pin_required_for: [grant, unblock, disable, focus_off, bedtime, screenshot]
+  # pin_lockout_seconds: 300     # after pin_max_attempts wrong PINs; doubles with every lockout in a row
+  # pin_required_for: [grant, unblock, disable, focus, focus_off, bedtime, screenshot]
+  #   add parent_present to also ask for the PIN before the "parent is home"
+  #   switch can be turned on (it can extend bedtime)
 
   default_policy:                # used for new users when manage_unknown_users: true
     daily_limit_minutes: 120
@@ -109,6 +105,7 @@ time_limits:
     - name: Video
       categories: [video]        # site categories from activity.site_categories
       daily_limit_minutes: {weekdays: 45, weekend: 90}
+      # weekly_limit_minutes: 300  # a budget per week, on its own or next to the daily one
       allowed_hours: 12:00-20:00
       warn_at_minutes: [5, 1]
       action: close              # close | warn
@@ -121,11 +118,34 @@ time_limits:
     - name: Chores
       minutes: 15
 
+  # "Ask for more time": the tray menu lets a managed user ask for extra minutes;
+  # a parent approves (needs the PIN, like any grant) or denies in Home Assistant.
+  time_requests:
+    enabled: true
+    options: [15, 30, 60]        # minutes that can be asked for (at most 6 options, 1-240 each)
+    cooldown_minutes: 10         # the next request can be made this much later
+    expire_minutes: 30           # an unanswered request lapses
+    max_per_day: 5
+
+  # Profiles: sets of overrides to switch between from Home Assistant (the "profile"
+  # select of each user, or the pclink.set_profile action). A profile may set
+  # daily_limit_minutes, weekly_limit_minutes, allowed_hours, bedtime, wake_time and
+  # rollover_max_minutes; what it does not name stays as in the user's block. A
+  # user block can have its own `profiles:`; an entry of the same name replaces the
+  # shared one. "normal" is the name for no profile.
+  # profiles:
+  #   holiday:
+  #     daily_limit_minutes: 180
+  #     bedtime: "22:00"
+  #   exam_week:
+  #     daily_limit_minutes: {weekdays: 30, weekend: 60}
+
   # Break reminders (20-20-20 rule) for everyone; a user block can set its own.
   breaks:
     enabled: true
     every_minutes: 20
-    duration_seconds: 20
+    duration_seconds: 20         # this long without input (and nothing playing) is a break
+    reset_after_idle_minutes: 3  # ...and this long without input is one even while a film plays (0: off)
 
   users:
     - name: kevin                # <- Windows account name
@@ -142,7 +162,7 @@ time_limits:
       bedtime:                   # separate from allowed hours: extendable from HA,
         weekdays: "20:30"        # auto-extended while a parent is home
         weekend: "21:30"
-      wake_time: "07:00"
+      wake_time: "07:00"         # when the night ends; without it, 06:00 (with a warning)
       bedtime_parent_extension_minutes: 60   # while the "Parent at home" switch is on
       warn_at_minutes: [30, 15, 5, 1]
       action: logoff             # logoff | lock | shutdown
@@ -158,8 +178,12 @@ time_limits:
           daily_limit_minutes: {weekdays: 30, weekend: 60}
       focus:                     # focus / homework mode (switch + duration in HA)
         allow_apps: [winword.exe, excel.exe, code.exe]
+        # a single host of a bigger site (docs.google.com) is matched through the page's address,
+        # which needs activity.url_method: uia; otherwise name the whole site (google.com)
         allow_sites: [khanacademy.org, wikipedia.org, docs.google.com]
         allow_categories: [education]
+        # a web app / --app browser window whose address cannot be read is closed during focus;
+        # allow_unknown_sites: true lets such windows stay (default false)
         default_minutes: 60
         counts_toward_limit: false   # homework time is free
         # schedule: {weekdays: 16:00-17:00}   # automatic focus windows
@@ -176,8 +200,8 @@ time_limits:
       unlimited: true
 
 activity:
-  idle_seconds: 120              # no input for this long = idle
-  away_seconds: 600              # ...and this long with nothing playing = away
+  idle_seconds: 120              # no input for this long = idle (at least 10)
+  away_seconds: 600              # ...and this long with nothing playing = away (at least idle_seconds)
   audio_keeps_active: true       # playing audio counts as active (e.g. video)
   media_keeps_active: true       # a full-screen video/game keeping the display on counts too
   controller_input: true         # game controllers count as input
@@ -214,6 +238,19 @@ windows_update:
   check_interval_hours: 6
   allow_install: false           # also expose an "Install updates" button
 
+updates:                         # updating PC Link itself from its GitHub releases ("PC Link update" in Home Assistant)
+  enabled: true                  # look for new releases
+  check_interval_hours: 12
+  allow_install: true            # Home Assistant may start the update (standalone build only)
+  auto_install: false            # true: install new releases without being asked
+  # include_prereleases: false
+  # repository: cslehel/home-assistant-pc-link   # its releases are trusted completely (they run as SYSTEM)
+  # github_token: ...            # only if the repository is private
+  # Code signature (docs/SECURITY.md): a signed copy of PC Link only installs updates signed by
+  # the same publisher. To tighten that:
+  # require_signature: true      # never install an unsigned update
+  # trusted_signers: ["0123...ABCD"]   # only these signing certificates (thumbprints)
+
 screenshots:                     # parent-only screenshot on demand (camera entity per user)
   enabled: false
   require_pin: true              # needs the parent PIN (when one is configured)
@@ -221,7 +258,6 @@ screenshots:                     # parent-only screenshot on demand (camera enti
   notify_user: true              # the user sees "a parent took a screenshot"
   max_width: 1280
   format: jpeg                   # jpeg (needs Pillow) | png
-  retain: false                  # keep the last image on the broker
   save_to_disk: false            # also keep the last `keep` images in %ProgramData%\PCLink\screenshots
 
 api:                             # local REST/WebSocket API + setup page (docs/API.md); the HA integration uses it
@@ -229,12 +265,18 @@ api:                             # local REST/WebSocket API + setup page (docs/A
   host: 127.0.0.1                # 0.0.0.0 for the integration (then a token is mandatory)
   port: 47392
   # token: change-me             # required for writes (commands, config edits) and for any access off this PC
-  allow_config_edit: true
-  advertise: true                # announce the API on the LAN (mDNS) so Home Assistant discovers the PC
+  # read_token: also-change-me   # can only read; once set, reading from this PC needs a token too
+  #                                (without it every user logged in on the PC can read the API)
+  # admin_token: a-third-one     # once set, only this token may read / write this file, reload it,
+  #                                install an update or run a custom command
+  # tls_cert: C:\ProgramData\PCLink\api-cert.pem   # serve the API over HTTPS
+  # tls_key: C:\ProgramData\PCLink\api-key.pem     # (pclink.exe make-cert creates the pair)
+  allow_config_edit: false       # true: the setup page may edit this file
+  # allowed_hosts: [family-pc.lan]   # other names a browser may use for this PC (names only, no port)
+  advertise: true               # announce the API on the LAN (mDNS) so Home Assistant discovers the PC
 
-fleet:                           # multi-PC roll-up device "PC Link (all PCs)"
+fleet:                           # other PCs' usage from Home Assistant, for shared budgets
   enabled: true
-  publish_rollup: true
 
 # Apps Home Assistant can launch / close in the users' sessions:
 # apps:
@@ -260,6 +302,8 @@ agent:
   tray_icon: true                # show the state icon in each user's system tray
   poll_seconds: 2
   volume_control: true           # volume / mute entities per user
+  display_control: true          # a "display" switch per user: turn that seat's monitor off / on
+  watchdog_seconds: 90           # restart an agent that runs but has been silent this long (0: never)
 
 logging:
   level: INFO

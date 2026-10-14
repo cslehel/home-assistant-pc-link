@@ -16,12 +16,21 @@ PY = os.path.join(ROOT, "pclink", "example_config.py")
 def main() -> int:
     with open(YAML, "r", encoding="utf-8") as fh:
         yaml_text = fh.read()
+    # The text is embedded as a raw string between ''' and ''': it must not contain the
+    # delimiter, end in a quote (which would run into it) or end in a backslash (which would escape it).
     if "'''" in yaml_text:
         print("config.example.yaml must not contain ''' (used as the embedding delimiter)", file=sys.stderr)
         return 1
+    if yaml_text.endswith(("'", "\\")):
+        print("config.example.yaml must not end in a quote or a backslash; end it with a newline", file=sys.stderr)
+        return 1
     with open(PY, "r", encoding="utf-8") as fh:
         source = fh.read()
-    new = re.sub(r"EMBEDDED = r'''.*?'''", lambda m: "EMBEDDED = r'''" + yaml_text + "'''", source, flags=re.S)
+    new, count = re.subn(r"EMBEDDED = r'''.*?'''", lambda m: "EMBEDDED = r'''" + yaml_text + "'''", source, flags=re.S)
+    if count != 1:
+        # Nothing to replace is not "in sync": the marker was renamed or reformatted.
+        print(f"{PY}: expected exactly one EMBEDDED = r'''...''' block, found {count}; nothing written", file=sys.stderr)
+        return 1
     if new == source:
         print("already in sync")
         return 0

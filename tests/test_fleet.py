@@ -1,4 +1,3 @@
-import json
 from datetime import date
 
 from pclink.config import FleetConfig
@@ -7,7 +6,7 @@ from pclink.fleet import FleetTracker
 
 def make(device="bbb-pc", clock=None):
     holder = {"t": 1000.0}
-    tracker = FleetTracker(FleetConfig(peer_timeout_seconds=180), "pclink", device, clock=lambda: holder["t"])
+    tracker = FleetTracker(FleetConfig(peer_timeout_seconds=180), device, clock=lambda: holder["t"])
     return tracker, holder
 
 
@@ -16,43 +15,29 @@ def user_payload(user="kevin", used=30, status="active", day="2026-09-28", histo
          "status": status, "presence": "active" if status == "active" else "none", "logged_in": status != "logged_off",
          "managed": True, "remaining_minutes": 60 - used, "history": history or [{"date": day, "active_minutes": used}]}
     p.update(extra)
-    return json.dumps(p).encode()
+    return p
 
 
-def test_ingests_peers_and_ignores_own_and_fleet_topics():
+def feed(t, dev, *payloads, name=None):
+    info = {"users": {p["user"]: p for p in payloads}}
+    if name is not None:
+        info["name"] = name
+    return t.update_peers({dev: info})
+
+
+def test_ingests_peers_and_ignores_own_and_bogus_ids():
     t, clock = make()
-    assert t.on_message("pclink/aaa-pc/availability", b"online")
-    assert not t.on_message("pclink/bbb-pc/availability", b"online")       # ourselves
-    assert not t.on_message("pclink/fleet/state", b"{}")                    # the roll-up itself
-    assert not t.on_message("other/aaa-pc/availability", b"online")
-    assert t.on_message("pclink/aaa-pc/user/kevin/state", user_payload())
+    assert not t.ready()
+    assert t.update_peers({"aaa-pc": {"users": {"kevin": user_payload()}},
+                           "bbb-pc": {"users": {"kevin": user_payload()}},     # ourselves
+                           "x" * 200: {"users": {}},                           # id too long
+                           "ccc-pc": "not a dict"}) == 1
+    assert t.ready()
     peers = t.peers()
-    assert peers["aaa-pc"].online and "kevin" in peers["aaa-pc"].users
-    assert t.changed
-    t.changed = False
-    # same summary again -> no change flag
-    t.on_message("pclink/aaa-pc/user/kevin/state", user_payload())
-    assert not t.changed
-    t.on_message("pclink/aaa-pc/user/kevin/state", user_payload(used=31))
-    assert t.changed
-    # a cleared retained topic removes the user
-    t.on_message("pclink/aaa-pc/user/kevin/state", b"")
-    assert "kevin" not in t.peers()["aaa-pc"].users
-
-
-def test_leader_is_smallest_online_device_id():
-    t, clock = make("bbb-pc")
-    assert t.is_leader()  # alone
-    t.on_message("pclink/ccc-pc/availability", b"online")
-    assert t.is_leader()
-    t.on_message("pclink/aaa-pc/availability", b"online")
-    assert not t.is_leader()
-    t.on_message("pclink/aaa-pc/availability", b"offline")
-    assert t.is_leader()
-    # a peer that went silent for longer than the timeout no longer counts
-    t.on_message("pclink/aaa-pc/availability", b"online")
-    clock["t"] += 500
-    assert t.online_peers() == [] and t.is_leader()
+    assert set(peers) == {"aaa-pc"} and "kevin" in peers["aaa-pc"].users
+    # what update_peers does not mention is kept (merged, not replaced)
+    t.update_peers({"ddd-pc": {"users": {}}})
+    assert "kevin" in t.peers()["aaa-pc"].users
 
 
 def test_external_usage_today_and_week():
@@ -61,30 +46,112 @@ def test_external_usage_today_and_week():
     week_start = date(2026, 9, 28)
     hist = [{"date": "2026-09-27", "active_minutes": 100}, {"date": "2026-09-28", "active_minutes": 20},
             {"date": "2026-09-29", "active_minutes": 30}, {"date": "2026-09-30", "active_minutes": 40}]
-    t.on_message("pclink/aaa-pc/user/kevin/state", user_payload(used=40, day="2026-09-30", history=hist))
-    t.on_message("pclink/ccc-pc/user/kevin/state", user_payload(used=15, day="2026-09-30", history=[{"date": "2026-09-30", "active_minutes": 15}]))
+    feed(t, "aaa-pc", user_payload(used=40, day="2026-09-30", history=hist))
+    feed(t, "ccc-pc", user_payload(used=15, day="2026-09-30", history=[{"date": "2026-09-30", "active_minutes": 15}]))
     today_s, week_s = t.external_usage("kevin", day, week_start)
     assert today_s == 55 * 60
     assert week_s == (20 + 30 + 40 + 15) * 60  # the 27th is last week
     # stale payload from yesterday: not today's usage, but its history still counts for the week
-    t.on_message("pclink/ddd-pc/user/kevin/state", user_payload(used=99, day="2026-09-29", history=[{"date": "2026-09-29", "active_minutes": 99}]))
+    feed(t, "ddd-pc", user_payload(used=99, day="2026-09-29", history=[{"date": "2026-09-29", "active_minutes": 99}]))
     today_s, week_s = t.external_usage("kevin", day, week_start)
     assert today_s == 55 * 60 and week_s == (20 + 30 + 40 + 15 + 99) * 60
     assert t.external_usage("nobody", day, week_start) == (0.0, 0.0)
 
 
-def test_rollup_combines_own_and_peers():
-    t, clock = make("bbb-pc")
-    t.on_message("pclink/aaa-pc/availability", b"online")
-    t.on_message("pclink/aaa-pc/user/kevin/state", user_payload(used=40))
-    t.on_message("pclink/aaa-pc/user/sarah/state", user_payload(user="sarah", used=10, status="logged_off"))
-    t.on_message("pclink/ccc-pc/availability", b"offline")
-    own = {"kevin": json.loads(user_payload(used=15, status="idle"))}
-    r = t.rollup(own)
-    assert r["pcs_online"] == 2 and r["pcs_online_list"] == ["aaa-pc", "bbb-pc"]
-    assert r["pcs_in_use"] == 1 and r["any_pc_in_use"]
-    kevin = r["users"]["kevin"]
-    assert kevin["total_minutes_today"] == 55 and kevin["per_pc"] == {"bbb-pc": 15, "aaa-pc": 40}
-    assert kevin["active_on"] == ["aaa-pc"] and kevin["status"] == "active" and kevin["remaining_minutes"] == 20
-    assert r["users"]["sarah"]["status"] == "logged_off" and r["users"]["sarah"]["logged_in_on"] == []
-    assert r["active_users"] == ["kevin"]
+def test_bad_peer_payloads_neither_raise_nor_cancel_real_usage():
+    t, clock = make()
+    day, week_start = date(2026, 9, 28), date(2026, 9, 28)
+    feed(t, "aaa-pc", user_payload(used=60))
+    assert t.external_usage("kevin", day, week_start) == (3600.0, 3600.0)
+    bad = [
+        {"user": "kevin", "date": "2026-09-28", "used_minutes": "x"},
+        {"user": "kevin", "date": "2026-09-28", "used_minutes": -100000, "history": [{"date": "2026-09-28", "active_minutes": -5}]},
+        {"user": "kevin", "date": "2026-09-28", "used_minutes": float("nan"), "history": 5},
+        {"user": "kevin", "date": "2026-09-28", "used_minutes": True, "history": [1, None, {"date": 7}],
+         "remaining_minutes": "soon", "managed": True, "status": ["x"], "name": 3},
+        {"user": "kevin", "date": "2026-09-28", "used_minutes": float("inf")},
+    ]
+    for i, payload in enumerate(bad):
+        assert feed(t, f"zz{i}", payload) == 1
+    assert t.external_usage("kevin", day, week_start) == (3600.0, 3600.0)
+    # non-dict containers are ignored
+    assert t.update_peers({"yy": {"users": ["kevin"]}, "yz": {"users": {"kevin": "x"}}}) == 2
+    assert t.update_peers(["not", "a", "dict"]) == 0
+    assert t.external_usage("kevin", day, week_start) == (3600.0, 3600.0)
+    # one PC cannot report more than a day per day, and neither can all of them together
+    feed(t, "big", {"user": "kevin", "date": "2026-09-28", "used_minutes": 1e9})
+    assert t.external_usage("kevin", day, week_start)[0] == 86400.0
+    assert t.peers()["big"].usage["kevin"] == {"2026-09-28": 1440.0}
+
+
+def test_lower_figures_never_give_time_back():
+    t, clock = make()
+    day = date(2026, 9, 28)
+    feed(t, "aaa-pc", user_payload(used=50))
+    feed(t, "aaa-pc", user_payload(used=10))
+    feed(t, "aaa-pc", {"user": "kevin", "date": "2026-09-28"})   # no figures at all
+    assert t.external_usage("kevin", day, day) == (3000.0, 3000.0)
+
+
+def test_made_up_dates_are_ignored():
+    t, clock = make()
+    clock["t"] = 1_790_000_000.0          # 2026-09
+    today = date.fromtimestamp(clock["t"])
+    hist = [{"date": f"{2100 + i}-01-01", "active_minutes": 60} for i in range(40)]
+    hist.append({"date": today.isoformat(), "active_minutes": 20})
+    feed(t, "aaa-pc", user_payload(used=20, day=today.isoformat(), history=hist))
+    marks = t.peers()["aaa-pc"].usage["kevin"]
+    assert marks == {today.isoformat(): 20.0}
+    assert t.external_usage("kevin", today, today) == (1200.0, 1200.0)
+
+
+def test_number_of_peers_and_users_is_capped():
+    from pclink.fleet import MAX_PEERS, MAX_USERS_PER_PEER
+    t, clock = make()
+    for i in range(MAX_PEERS + 20):
+        t.update_peers({f"pc{i:03d}": {"users": {}}})
+    assert len(t.peers()) == MAX_PEERS
+    users = {f"u{i}": user_payload(user=f"u{i}") for i in range(MAX_USERS_PER_PEER + 20)}
+    t.update_peers({"pc001": {"users": users}})
+    assert len(t.peers()["pc001"].users) == MAX_USERS_PER_PEER
+    # peers that fell silent and hold no usage make room again
+    feed(t, "pc000", user_payload(day=date.fromtimestamp(clock["t"]).isoformat()))
+    clock["t"] += 1000
+    assert t.update_peers({"new-pc": {"users": {}}}) == 1
+    # pc000 and pc001 still hold usage that counts this week
+    assert set(t.peers()) == {"pc000", "pc001", "new-pc"}
+
+
+def test_former_self_is_not_counted():
+    holder = {"t": 1000.0}
+    t = FleetTracker(FleetConfig(peer_timeout_seconds=180), "new-id", clock=lambda: holder["t"], own_name="Kids-PC")
+    day = date(2026, 9, 28)
+    feed(t, "old-id", user_payload(used=40, bonus_local_minutes=15), name="kids-pc")
+    feed(t, "other-pc", user_payload(used=10, bonus_local_minutes=5), name="Study-PC")
+    assert t.external_usage("kevin", day, day) == (600.0, 600.0)
+    assert t.external_extras("kevin", day)["bonus_seconds"] == 5 * 60
+
+
+def test_tracker_is_safe_to_feed_from_another_thread():
+    import threading
+    t, clock = make()
+    day = date(2026, 9, 28)
+    stop = threading.Event()
+
+    def writer():
+        i = 0
+        while not stop.is_set():
+            i += 1
+            feed(t, f"n{i % 60}", user_payload(used=i % 50))
+            clock["t"] += 1
+
+    th = threading.Thread(target=writer)
+    th.start()
+    try:
+        for _ in range(300):
+            t.external_usage("kevin", day, day)
+            t.external_extras("kevin", day)
+            t.peers()
+    finally:
+        stop.set()
+        th.join()

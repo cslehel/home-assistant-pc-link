@@ -54,9 +54,18 @@ if (Test-Path $InstallDir) {
     Remove-Item $InstallDir -Recurse -Force
     Write-Host "Removed $InstallDir"
 }
+# what an interrupted upgrade may have left next to it
+foreach ($leftover in @("$InstallDir.new", "$InstallDir.old", "$InstallDir.failed")) {
+    if (Test-Path -LiteralPath $leftover) { Remove-Item -LiteralPath $leftover -Recurse -Force -ErrorAction SilentlyContinue }
+}
 $data = Join-Path $env:ProgramData "PCLink"
 if ($Purge) {
-    if (Test-Path $data) { Remove-Item $data -Recurse -Force; Write-Host "Removed $data" }
+    $item = Get-Item -LiteralPath $data -Force -ErrorAction SilentlyContinue
+    if ($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        # a link to somewhere else: remove the link, never what it points to
+        [IO.Directory]::Delete($data)
+        Write-Host "Removed the link $data (the folder it pointed to was not touched)."
+    } elseif ($item) { Remove-Item -LiteralPath $data -Recurse -Force; Write-Host "Removed $data" }
 } else {
     Write-Host "Kept the configuration and statistics in $data (run with -Purge to delete them)."
 }

@@ -97,7 +97,7 @@ def test_spec_references_existing_entry_scripts():
 
 # -- selftest ---------------------------------------------------------------------------------
 def test_selftest_passes_with_core_modules():
-    res = run(["-m", "pclink", "selftest", "--require", "psutil,paho-mqtt,pyyaml"])
+    res = run(["-m", "pclink", "selftest", "--require", "psutil,pyyaml"])
     assert res.returncode == 0, res.stdout + res.stderr
     assert "psutil" in res.stdout and res.stdout.strip().endswith("OK")
 

@@ -9,6 +9,11 @@ on:
     - cron: "17 6 * * 1"
   workflow_dispatch:
 
+# Nothing here needs to write to the repository; the third-party actions below
+# get a token that can only read it.
+permissions:
+  contents: read
+
 jobs:
   service:
     name: PC Link service (pure-Python tests)
@@ -17,8 +22,8 @@ jobs:
       matrix:
         python-version: ["3.11", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -r requirements-dev.txt
@@ -38,11 +43,13 @@ jobs:
             python-version: "3.11"
             harness: "pytest-homeassistant-custom-component==0.13.109 zeroconf==0.131.0"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install ${{ matrix.harness }} PyTurboJPEG tzdata
+      - env:
+          HARNESS: ${{ matrix.harness }}
+        run: pip install $HARNESS PyTurboJPEG tzdata
       - run: pip freeze | grep -i "^homeassistant=="
       - run: pytest tests_ha -q -p no:cacheprovider
 
@@ -50,8 +57,9 @@ jobs:
     name: hassfest (Home Assistant manifest validation)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: home-assistant/actions/hassfest@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      # pinned to a commit (the branch moves): master as of 2026-10; update it now and then
+      - uses: home-assistant/actions/hassfest@50baf3a307f87100cf550d4ae127746595030d5d
 
   hacs:
     name: HACS validation
@@ -61,8 +69,9 @@ jobs:
     if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: hacs/action@main
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      # pinned to a commit (the branch moves): main as of 2026-10; update it now and then
+      - uses: hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa
         with:
           category: integration
           # The brands check needs the "pclink" domain in home-assistant/brands

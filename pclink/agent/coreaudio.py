@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
+import time
 from ctypes import POINTER, c_float, c_uint32
 from typing import Optional
 
@@ -94,13 +96,48 @@ CLSCTX_ALL = 23
 class CoreAudio:
     """Default render endpoint of *this* session (each ASTER seat has its own)."""
 
+    # The endpoint objects are bound to whatever was the default output device when
+    # they were created.  They keep working (and keep reading silence) after the user
+    # switches to another device, so they are re-resolved this often.
+    REFRESH_SECONDS = 20.0
+
     def __init__(self, enabled: bool = True):
         self.available = bool(_IS_WIN and enabled and _COMTYPES)
-        self._meter = None
-        self._volume = None
+        # COM objects belong to the apartment of the thread that created them.  The
+        # poll thread reads the meter / volume and the thread receiving the service's
+        # messages sets the volume, so each thread keeps its own set of objects.
+        self._tls = threading.local()
+        self._lock = threading.RLock()   # guards (re)creation and the shared failure counter
         self._failures = 0
 
+    # thread-local views (kept as properties so the rest of the class reads naturally)
+    @property
+    def _meter(self):
+        return getattr(self._tls, "meter", None)
+
+    @_meter.setter
+    def _meter(self, value) -> None:
+        self._tls.meter = value
+
+    @property
+    def _volume(self):
+        return getattr(self._tls, "volume", None)
+
+    @_volume.setter
+    def _volume(self, value) -> None:
+        self._tls.volume = value
+
     # -- device acquisition ------------------------------------------------------------
+    def _com_init(self) -> None:
+        """Make sure COM is initialised on the calling thread (once per thread)."""
+        if getattr(self._tls, "com", False):
+            return
+        try:
+            comtypes.CoInitialize()
+        except Exception:  # noqa: BLE001 - already initialised in another mode: fine, COM is usable
+            pass
+        self._tls.com = True
+
     def _endpoint(self):
         enum = comtypes.CoCreateInstance(CLSID_MMDeviceEnumerator, IMMDeviceEnumerator, CLSCTX_ALL)
         return enum.GetDefaultAudioEndpoint(E_RENDER, E_MULTIMEDIA)
@@ -108,28 +145,38 @@ class CoreAudio:
     def _ensure(self) -> bool:
         if not self.available:
             return False
-        if self._meter is not None and self._volume is not None:
-            return True
-        try:
-            dev = self._endpoint()
-            meter = dev.Activate(IAudioMeterInformation._iid_, CLSCTX_ALL, None)
-            self._meter = meter.QueryInterface(IAudioMeterInformation)
-            vol = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-            self._volume = vol.QueryInterface(IAudioEndpointVolume)
-            self._failures = 0
-            return True
-        except Exception as exc:  # noqa: BLE001
-            self._failures += 1
-            if self._failures in (1, 10):
-                log.info("audio endpoint unavailable (%s); volume/meter disabled for now", exc)
-            self._meter = self._volume = None
-            return False
+        with self._lock:
+            now = time.monotonic()
+            fresh = now - getattr(self._tls, "resolved_at", 0.0) < self.REFRESH_SECONDS
+            if self._meter is not None and self._volume is not None and fresh:
+                return True
+            try:
+                self._com_init()
+                dev = self._endpoint()
+                meter = dev.Activate(IAudioMeterInformation._iid_, CLSCTX_ALL, None)
+                self._meter = meter.QueryInterface(IAudioMeterInformation)
+                vol = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                self._volume = vol.QueryInterface(IAudioEndpointVolume)
+                self._tls.resolved_at = now
+                self._failures = 0
+                return True
+            except Exception as exc:  # noqa: BLE001
+                self._failures += 1
+                if self._failures in (1, 10):
+                    log.info("audio endpoint unavailable (%s); volume/meter disabled for now", exc)
+                self._meter = self._volume = None
+                return False
 
     def _reset(self) -> None:
-        self._meter = self._volume = None
+        with self._lock:
+            self._meter = self._volume = None
 
     # -- queries ----------------------------------------------------------------------------
     def peak(self) -> Optional[float]:
+        with self._lock:
+            return self._peak()
+
+    def _peak(self) -> Optional[float]:
         if not self._ensure():
             return None
         try:

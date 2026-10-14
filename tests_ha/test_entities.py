@@ -22,7 +22,7 @@ async def test_entities_are_created_from_the_catalog(hass: HomeAssistant, fake_c
     entry = await setup_entry(hass, entry_data)
     client = fake_client.instances[-1]
     # device
-    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, "testpc")})
+    device = next((d for d in dr.async_entries_for_config_entry(dr.async_get(hass), hass.config_entries.async_entries(DOMAIN)[0].entry_id) if (DOMAIN, "testpc") in d.identifiers), None)
     assert device is not None and device.name == "TestPC" and device.model == "Windows PC" and device.sw_version == "0.3.0"
     assert device.configuration_url == "http://192.168.1.50:47392"
     # PC entities
@@ -62,7 +62,8 @@ async def test_entities_are_created_from_the_catalog(hass: HomeAssistant, fake_c
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
     assert hass.states.get("sensor.testpc_cpu_usage").state == "unavailable"
-    assert not hass.services.has_service(DOMAIN, "add_minutes")
+    # the actions belong to the integration, not to an entry: they survive the unload
+    assert hass.services.has_service(DOMAIN, "add_minutes")
 
 
 async def test_commands_are_sent_as_set_actions(hass: HomeAssistant, fake_client, entry_data) -> None:
@@ -116,7 +117,7 @@ async def test_pushed_state_events_and_new_entities(hass: HomeAssistant, fake_cl
     ws.push({"type": "event", "ts": 1.0, "user": "kevin", "event": "time_up"})
     await hass.async_block_till_done()
     assert len(events) == 1
-    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, "testpc")})
+    device = next((d for d in dr.async_entries_for_config_entry(dr.async_get(hass), hass.config_entries.async_entries(DOMAIN)[0].entry_id) if (DOMAIN, "testpc") in d.identifiers), None)
     assert events[0].data["device_id"] == device.id and events[0].data["event"] == "time_up" and events[0].data["user"] == "kevin"
     assert events[0].data["pc_id"] == "testpc"
     # a new catalog (e.g. after a config reload on the PC) adds entities without a restart

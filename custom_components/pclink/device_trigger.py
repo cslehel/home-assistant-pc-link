@@ -17,7 +17,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.trigger import TriggerActionType, TriggerInfo
 from homeassistant.helpers.typing import ConfigType
 
-from .const import DOMAIN, EVENT_TYPE, PC_TRIGGERS, USER_TRIGGERS
+from .const import DOMAIN, EVENT_TYPE, PC_TRIGGERS, ROLLUP_DEVICE_ID, USER_TRIGGERS, device_entry_ids
 from .coordinator import PclinkCoordinator
 
 CONF_SUBTYPE = "subtype"
@@ -30,10 +30,10 @@ TRIGGER_SCHEMA = DEVICE_TRIGGER_BASE_SCHEMA.extend({
 
 def coordinator_for_device(hass: HomeAssistant, device_id: str) -> Optional[PclinkCoordinator]:
     device = dr.async_get(hass).async_get(device_id)
-    if device is None:
-        return None
+    if device is None or (DOMAIN, ROLLUP_DEVICE_ID) in device.identifiers:
+        return None  # the "all PCs" device belongs to a PC's entry, but no PC's events are its own
     coordinators = hass.data.get(DOMAIN, {})
-    for entry_id in device.config_entries:
+    for entry_id in device_entry_ids(device):
         if entry_id in coordinators:
             return coordinators[entry_id]
     return None

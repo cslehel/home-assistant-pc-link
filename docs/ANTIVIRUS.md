@@ -14,7 +14,9 @@ engines watch closely:
 - **logging users off** and changing account **logon hours**
   (`NetUserSetInfo`, `net.exe user /times`);
 - running as a **LocalSystem service** that **resists being stopped**;
-- reading other windows via **UI Automation**.
+- reading other windows via **UI Automation**;
+- starting **PowerShell** from the service while it updates itself (to read
+  the download's signatures and to run its installer).
 
 Those are exactly the behaviors this tool is *supposed* to have. The correct
 way to keep antivirus happy is **transparency + code signing + an allowlist
@@ -34,6 +36,15 @@ detection *more* likely and hurts your SmartScreen reputation.
    ```
    An **OV** certificate builds SmartScreen reputation over time; an **EV**
    certificate gives instant SmartScreen trust.
+
+   Signing also protects the self-update: a signed copy only installs an
+   update signed by the same publisher. For that `install.ps1` must be
+   signed too and the package must contain a signed catalog of all its files
+   (`pclink.cat`); the workflow does both. When signing by hand, do the same
+   as described in
+   [DEVELOPMENT.md](DEVELOPMENT.md#building-the-standalone-windows-version)
+   or the PC will refuse to update itself to that build. See
+   [SECURITY.md](SECURITY.md#code-signature-of-an-update).
 
 2. **Build cleanly.** The standalone build already follows the practices that
    keep heuristics calm (`packaging/pclink.spec`): a one-folder build instead of

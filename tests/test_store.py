@@ -59,6 +59,7 @@ def test_purge_removes_old_days():
     today = date(2026, 9, 28)
     old = today - timedelta(days=200)
     s.add_usage("kevin", old, active=600)
+    s.add_usage("kevin", today - timedelta(days=1), active=60)   # (the days count back from the newest usage)
     s.flush()
     s.purge(retention_days=90, today=today)
     assert s.usage("kevin", old).active == 0
@@ -105,3 +106,24 @@ def test_recent_events_filters():
     assert len(s.recent_events(10)) == 3
     assert {e["user"] for e in s.recent_events(10, user="kevin")} == {"kevin"}
     assert [e["kind"] for e in s.recent_events(10, kind="logoff")] == ["logoff"]
+
+
+def test_failed_setting_write_does_not_change_the_cache():
+    import sqlite3
+
+    import pytest
+
+    s = make_store()
+    s.set_setting("kevin", "blocked", False)
+
+    class Broken:
+        def execute(self, *a, **k):
+            raise sqlite3.OperationalError("disk full")
+
+    real, s._db = s._db, Broken()
+    with pytest.raises(sqlite3.Error):
+        s.set_setting("kevin", "blocked", True)
+    with pytest.raises(sqlite3.Error):
+        s.delete_setting("kevin", "blocked")
+    s._db = real
+    assert s.get_setting("kevin", "blocked") is False

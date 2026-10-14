@@ -55,13 +55,13 @@ class FakeBackend:
         return {"ok": True, "restart_needed": []}
 
     def api_reload(self):
-        return {"ok": True, "restart_needed": ["mqtt"]}
+        return {"ok": True, "restart_needed": ["storage"]}
 
 
 @pytest.fixture()
 def server():
     backend = FakeBackend()
-    cfg = ApiConfig(enabled=True, host="127.0.0.1", port=0, token="s3cret")
+    cfg = ApiConfig(enabled=True, host="127.0.0.1", port=0, token="s3cret", allow_config_edit=True)
     srv = ApiServer(cfg, backend, html="<html><body>setup</body></html>")
     srv.start()
     yield srv, backend
@@ -111,7 +111,7 @@ def test_reads_are_open_on_loopback_and_writes_need_token(server):
     assert status == 200 and not body["ok"]
     status, body = call(srv, "POST", "/api/command", "not json", token="s3cret")
     assert status == 400
-    assert call(srv, "POST", "/api/reload", token="s3cret")[1]["restart_needed"] == ["mqtt"]
+    assert call(srv, "POST", "/api/reload", token="s3cret")[1]["restart_needed"] == ["storage"]
 
 
 def test_config_endpoints(server):

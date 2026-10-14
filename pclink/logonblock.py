@@ -43,7 +43,32 @@ class NullBlocker:
         return None
 
 
+_BAD_NAME_CHARS = set('"/\\[]:;|=,+*?<>@')
+
+
+def valid_account_name(user: object) -> bool:
+    """Is this a name a local Windows account can have?
+
+    Names reach ``net.exe`` as an argument, so anything that could be read as
+    an option (``/domain``) or is not an account name at all is refused."""
+    if not isinstance(user, str) or not 0 < len(user) <= 20:
+        return False
+    if user != user.strip() or user.endswith("."):
+        return False
+    return not any(ch in _BAD_NAME_CHARS or ch < " " for ch in user)
+
+
+def _custom_hours(hours: Optional[bytes]) -> bool:
+    """Logon hours an administrator restricted by hand: some hours allowed, not all."""
+    return bool(hours) and len(hours) == 21 and any(hours) and hours != _HOURS_ALL
+
+
 class LogonBlocker:
+    # Logon hours an account had before the first block (user -> 21 bytes), given back when
+    # the block is lifted.  ``on_remember(user, hours | None)`` lets the owner persist them.
+    remembered: Optional[dict] = None
+    on_remember = None
+
     def __init__(self, method: str = "logon_hours"):
         if method not in ("logon_hours", "disable_account"):
             raise ValueError(f"unsupported block method {method!r}")
@@ -77,6 +102,9 @@ class LogonBlocker:
 
     # -- internals -----------------------------------------------------------
     def _set(self, user: str, blocked: bool) -> bool:
+        if not valid_account_name(user):
+            log.error("not a local account name, left alone: %r", str(user)[:40])
+            return False
         try:
             if self.method == "disable_account":
                 return self._set_disabled(user, blocked)
@@ -105,6 +133,10 @@ class LogonBlocker:
         current = self.is_blocked(user)
         if current is not None and current == blocked:
             return True
+        if blocked:
+            self._remember(user, self._read_hours(user))
+        elif self._restore_hours(user):
+            return True
         net_exe = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "net.exe")
         arg = "/times:" if blocked else "/times:all"
         creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -121,6 +153,63 @@ class LogonBlocker:
             return False
         log.info("logon hours for %s set to %s", user, "none (blocked)" if blocked else "all")
         return True
+
+    # -- logon hours an administrator had set before we blocked ------------------------
+    def _read_hours(self, user: str) -> Optional[bytes]:
+        try:
+            return _as_bytes(self._net.NetUserGetInfo(None, user, 2).get("logon_hours"))
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _remember(self, user: str, hours: Optional[bytes]) -> None:
+        if not _custom_hours(hours):
+            return
+        if self.remembered is None:
+            self.remembered = {}
+        self.remembered[user.lower()] = hours
+        log.info("%s has restricted logon hours of its own; they are put back when the block is lifted", user)
+        self._notify(user, hours)
+
+    def _notify(self, user: str, hours: Optional[bytes]) -> None:
+        if self.on_remember is not None:
+            try:
+                self.on_remember(user.lower(), hours)
+            except Exception:  # noqa: BLE001
+                log.debug("could not store the logon hours of %s", user, exc_info=True)
+
+    def _restore_hours(self, user: str) -> bool:
+        """Give the account the logon hours it had before the block; False: there were none
+        to give back (or it failed) and the caller allows all hours instead."""
+        hours = (self.remembered or {}).get(user.lower())
+        if not _custom_hours(hours):
+            return False
+        try:
+            self._write_hours(user, hours)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not put back the logon hours of %s (%s); allowing all hours", user, exc)
+            return False
+        self.remembered.pop(user.lower(), None)
+        self._notify(user, None)
+        log.info("logon hours for %s put back to what they were before the block", user)
+        return True
+
+    def _write_hours(self, user: str, hours: bytes) -> None:
+        """NetUserSetInfo level 1020 through ctypes (pywin32 does not offer that level)."""
+        import ctypes
+        from ctypes import wintypes
+
+        class USER_INFO_1020(ctypes.Structure):  # noqa: N801 - Windows name
+            _fields_ = [("usri1020_units_per_week", wintypes.DWORD), ("usri1020_logon_hours", ctypes.POINTER(ctypes.c_ubyte))]
+
+        buf = (ctypes.c_ubyte * 21)(*hours)
+        info = USER_INFO_1020(168, ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte)))
+        api = ctypes.WinDLL("netapi32")
+        api.NetUserSetInfo.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p,
+                                       ctypes.POINTER(wintypes.DWORD)]
+        api.NetUserSetInfo.restype = wintypes.DWORD
+        status = api.NetUserSetInfo(None, user, 1020, ctypes.byref(info), ctypes.byref(wintypes.DWORD()))
+        if status != 0:
+            raise OSError(f"NetUserSetInfo(1020) failed with status {status}")
 
 
 def _as_bytes(value) -> Optional[bytes]:

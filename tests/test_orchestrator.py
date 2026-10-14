@@ -1,15 +1,27 @@
 """End-to-end-ish tests of the orchestrator using in-memory fakes for all the
 Windows backends, so the full tick / enforcement / publish path runs anywhere.
 """
-import json
 from datetime import datetime
 
+import pytest
 import yaml
 
 from pclink.config import Config
 from pclink.core import Orchestrator
 from pclink.models import SessionInfo
 from pclink.store import Store
+
+
+@pytest.fixture(autouse=True)
+def no_hidden_step_failures(monkeypatch):
+    """A step of the tick that raises is isolated in production; in these tests it is a bug."""
+    finish = Orchestrator._finish_tick
+
+    def strict(self, now_ts):
+        assert not self._failing_steps, self._failing_steps
+        finish(self, now_ts)
+
+    monkeypatch.setattr(Orchestrator, "_finish_tick", strict)
 
 
 class FakeSessions:
@@ -51,31 +63,27 @@ class FakeBlocker:
         return self.state.get(user)
 
 
-class FakeMqtt:
+class FakeApi:
+    """Stands in for the local API server with the Home Assistant integration connected:
+    records the state and the events the service pushes over the WebSocket."""
+
     def __init__(self):
-        self.base = "pclink/testpc"
-        self.availability_topic = "pclink/testpc/availability"
-        self.state_topic = "pclink/testpc/state"
-        self.discovery_prefix = "homeassistant"
-        self.published = {}
-        self.discovery = {}
-        self.events = []
-        self.connected = True
+        self.pc, self.users = None, {}       # the last state push
+        self.pushes, self.messages = 0, []   # state pushes so far; every event message
+        self.events = []                     # (path, kind): "pc" or "user/<name>", and the event
+        self.client_count = 1
 
-    def user_state_topic(self, slug):
-        return f"{self.base}/user/{slug}/state"
+    def user_state(self, user="kevin"):
+        return self.users[user]
 
-    def publish(self, topic, payload, retain=False, qos=None):
-        self.published[topic] = payload
-
-    def publish_discovery(self, component, object_id, payload, node_id=None):
-        self.discovery[f"{node_id + ':' if node_id else ''}{component}/{object_id}"] = payload
-
-    def publish_event(self, path, event):
-        self.events.append((path, event))
-
-    def publish_availability(self, online=True):
-        self.published[self.availability_topic] = "online" if online else "offline"
+    def push(self, message):
+        if message.get("type") == "state":
+            self.pushes += 1
+            self.pc, self.users = message["pc"], message["users"]
+        elif message.get("type") == "event":
+            self.messages.append(message)
+            self.events.append((f"user/{message['user']}" if message.get("user") else "pc", message["event"]))
+        return self.client_count
 
     def start(self):
         pass
@@ -130,16 +138,17 @@ def build(clock_value, yaml_text=None, agent=False):
             - name: dad
               unlimited: true
     """))
+    cfg.api.enabled, cfg.api.push_interval_seconds = True, 0   # every tick pushes the state to FakeApi
     holder = {"now": clock_value}
     sessions = FakeSessions()
     blocker = FakeBlocker()
-    mqtt = FakeMqtt()
+    api = FakeApi()
     agent_server = FakeAgentServer() if agent else None
-    orch = Orchestrator(cfg, store=Store(":memory:"), sessions=sessions, blocker=blocker, mqtt=mqtt,
+    orch = Orchestrator(cfg, store=Store(":memory:"), sessions=sessions, blocker=blocker, api=api,
                         clock=lambda: holder["now"], agent_server=agent_server)
     orch._holder = holder
     orch._agent = agent_server
-    return orch, sessions, blocker, mqtt
+    return orch, sessions, blocker, api
 
 
 def session(user="kevin", sid=2, **kw):
@@ -161,21 +170,20 @@ def attach(orch, sessions, sid, rep):
 
 
 def test_publishes_pc_and_user_state():
-    orch, sessions, blocker, mqtt = build(datetime(2026, 9, 28, 12, 0, 0))
+    orch, sessions, blocker, api = build(datetime(2026, 9, 28, 12, 0, 0))
     sessions.sessions = [session()]
     orch.tick()
-    assert mqtt.state_topic in mqtt.published
-    assert "sensor/cpu_percent" in mqtt.discovery
-    user_topic = mqtt.user_state_topic("kevin")
-    assert user_topic in mqtt.published
-    payload = mqtt.published[user_topic]
+    assert api.pushes == 1 and api.pc is not None
+    assert "cpu_percent" in {e["key"] for e in orch.api_entities()["entities"]}
+    assert "kevin" in api.users
+    payload = api.users["kevin"]
     assert payload["managed"] is True
     assert payload["status"] == "active"
 
 
 def test_out_of_time_blocks_and_logs_off():
     now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now)
+    orch, sessions, blocker, api = build(now)
     orch.store.add_usage("kevin", now.date(), active=61 * 60)
     sessions.sessions = [session()]
     orch.tick()  # should request a block and start grace (warn)
@@ -188,17 +196,17 @@ def test_out_of_time_blocks_and_logs_off():
 
 def test_command_add_minutes_via_json():
     now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now)
+    orch, sessions, blocker, api = build(now)
     sessions.sessions = [session()]
     orch.tick()
-    orch.on_command("cmd", {"action": "add_minutes", "user": "kevin", "minutes": 30})
+    assert orch._queue(("cmd", {"action": "add_minutes", "user": "kevin", "minutes": 30}))
     orch._drain_commands()
     assert orch.timekeeper.bonus_seconds("kevin", now.date()) == 30 * 60
 
 
 def test_command_set_limit_and_block_toggle():
     now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now)
+    orch, sessions, blocker, api = build(now)
     sessions.sessions = [session()]
     orch.tick()
     orch.dispatch("user_kevin_limit_today", "200")
@@ -208,7 +216,7 @@ def test_command_set_limit_and_block_toggle():
 
 
 def test_shutdown_disabled_config_is_ignored():
-    orch, sessions, blocker, mqtt = build(datetime(2026, 9, 28, 12, 0, 0), yaml_text="""
+    orch, sessions, blocker, api = build(datetime(2026, 9, 28, 12, 0, 0), yaml_text="""
         device: {name: T}
         power: {allow_shutdown: false}
         time_limits: {users: [{name: kevin, daily_limit_minutes: 60}]}
@@ -223,7 +231,7 @@ def test_shutdown_disabled_config_is_ignored():
 
 def test_activity_tracking_accumulates_gaming(monkeypatch):
     now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now)
+    orch, sessions, blocker, api = build(now)
     from pclink.models import AgentReport, ForegroundInfo
     rep = AgentReport(session_id=2, ts=now.timestamp(),
                       foreground=ForegroundInfo(name="game.exe", exe="C:\\x\\steamapps\\common\\g\\game.exe"))
@@ -247,38 +255,38 @@ def test_activity_tracking_accumulates_gaming(monkeypatch):
 
 def test_user_payload_carries_presence_and_events_on_transitions():
     now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now)
+    orch, sessions, blocker, api = build(now)
     s = session()
     attach(orch, sessions, 2, report(idle=5))
     sessions.sessions = [s]
     orch.tick()
-    payload = mqtt.published[mqtt.user_state_topic("kevin")]
+    payload = api.users["kevin"]
     assert payload["presence"] == "active" and payload["status"] == "active"
     assert payload["presence_details"]["reason"] == "recent input"
-    assert ("user/kevin", "logged_in") not in mqtt.events  # first sight is not a transition
+    assert ("user/kevin", "logged_in") not in api.events  # first sight is not a transition
     # monitor goes to sleep -> away, status 'away', event emitted
     attach(orch, sessions, 2, report(idle=100, display_state="off"))
     orch._holder["now"] = now.replace(second=10)
     orch.tick()
-    payload = mqtt.published[mqtt.user_state_topic("kevin")]
+    payload = api.users["kevin"]
     assert payload["presence"] == "away" and payload["status"] == "away"
-    assert ("user/kevin", "presence_away") in mqtt.events
-    assert mqtt.published[mqtt.state_topic]["anyone_present"] is False
+    assert ("user/kevin", "presence_away") in api.events
+    assert api.pc["anyone_present"] is False
     # user comes back
     attach(orch, sessions, 2, report(idle=1))
     orch._holder["now"] = now.replace(second=20)
     orch.tick()
-    assert ("user/kevin", "presence_back") in mqtt.events
+    assert ("user/kevin", "presence_back") in api.events
     # log off -> event
     sessions.sessions = []
     orch._holder["now"] = now.replace(second=30)
     orch.tick()
-    assert ("user/kevin", "logged_off") in mqtt.events
+    assert ("user/kevin", "logged_off") in api.events
 
 
 def test_monitor_off_stops_the_clock_for_count_idle_false():
     now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now)
+    orch, sessions, blocker, api = build(now)
     s = session()
     sessions.sessions = [s]
     attach(orch, sessions, 2, report(idle=60, display_state="off"))
@@ -319,7 +327,7 @@ time_limits:
 
 def test_blocked_app_is_closed_via_agent_and_events_fire():
     now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now, RULES_YAML, agent=True)
+    orch, sessions, blocker, api = build(now, RULES_YAML, agent=True)
     orch._agent.connected.add(2)
     sessions.sessions = [session()]
     attach(orch, sessions, 2, report(name="RobloxPlayerBeta.exe"))
@@ -327,14 +335,14 @@ def test_blocked_app_is_closed_via_agent_and_events_fire():
     closes = orch._agent.messages("close")
     assert closes and closes[0][1]["name"] == "RobloxPlayerBeta.exe" and closes[0][1]["tab"] is False
     assert orch._agent.messages("notify")
-    assert ("user/kevin", "app_limit_reached") in mqtt.events and ("user/kevin", "app_closed") in mqtt.events
-    payload = mqtt.published[mqtt.user_state_topic("kevin")]
+    assert ("user/kevin", "app_limit_reached") in api.events and ("user/kevin", "app_closed") in api.events
+    payload = api.users["kevin"]
     assert payload["rules"]["roblox"]["state"] == "blocked" and payload["rules"]["youtube"]["state"] == "ok"
 
 
 def test_site_limit_closes_tab_after_usage_and_can_be_disabled_from_ha():
     now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now, RULES_YAML, agent=True)
+    orch, sessions, blocker, api = build(now, RULES_YAML, agent=True)
     orch._agent.connected.add(2)
     sessions.sessions = [session()]
     attach(orch, sessions, 2, report(name="chrome.exe", domain="youtube.com"))
@@ -350,18 +358,18 @@ def test_site_limit_closes_tab_after_usage_and_can_be_disabled_from_ha():
     orch._holder["now"] = now.replace(minute=2)
     orch.tick()
     assert not orch._agent.messages("close")
-    assert mqtt.published[mqtt.user_state_topic("kevin")]["rules"]["youtube"]["state"] == "off"
+    assert api.users["kevin"]["rules"]["youtube"]["state"] == "off"
     # and raise its limit for today via the number entity
     orch.dispatch("user_kevin_rule_youtube_enabled", "ON")
     orch.dispatch("user_kevin_rule_youtube_limit_today", "120")
     orch._holder["now"] = now.replace(minute=3)
     orch.tick()
-    assert mqtt.published[mqtt.user_state_topic("kevin")]["rules"]["youtube"]["limit_minutes"] == 120
+    assert api.users["kevin"]["rules"]["youtube"]["limit_minutes"] == 120
 
 
 def test_focus_mode_switch_closes_disallowed_apps_and_pauses_budget():
     now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now, RULES_YAML, agent=True)
+    orch, sessions, blocker, api = build(now, RULES_YAML, agent=True)
     orch._agent.connected.add(2)
     sessions.sessions = [session()]
     attach(orch, sessions, 2, report(name="game.exe", exe="C:\\x\\steamapps\\common\\g\\game.exe"))
@@ -369,10 +377,10 @@ def test_focus_mode_switch_closes_disallowed_apps_and_pauses_budget():
     orch.dispatch("user_kevin_focus_mode", "ON")
     orch._holder["now"] = now.replace(second=10)
     orch.tick()
-    payload = mqtt.published[mqtt.user_state_topic("kevin")]
+    payload = api.users["kevin"]
     assert payload["focus_active"] is True and payload["focus_remaining_minutes"] == 30
     assert orch._agent.messages("close")
-    assert ("user/kevin", "focus_started") in mqtt.events
+    assert ("user/kevin", "focus_started") in api.events
     used_before = orch.store.usage("kevin", now.date()).active
     orch._holder["now"] = now.replace(second=40)
     orch.tick()
@@ -380,13 +388,13 @@ def test_focus_mode_switch_closes_disallowed_apps_and_pauses_budget():
     orch.dispatch("user_kevin_focus_mode", "OFF")
     orch._holder["now"] = now.replace(second=50)
     orch.tick()
-    assert ("user/kevin", "focus_ended") in mqtt.events
-    assert mqtt.published[mqtt.user_state_topic("kevin")]["focus_active"] is False
+    assert ("user/kevin", "focus_ended") in api.events
+    assert api.users["kevin"]["focus_active"] is False
 
 
 def test_break_reminder_balloon_and_event():
     now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now, RULES_YAML, agent=True)
+    orch, sessions, blocker, api = build(now, RULES_YAML, agent=True)
     orch._agent.connected.add(2)
     sessions.sessions = [session()]
     attach(orch, sessions, 2, report(name="notepad.exe", idle=1))
@@ -394,29 +402,29 @@ def test_break_reminder_balloon_and_event():
     orch._holder["now"] = now.replace(minute=1, second=5)
     orch.tick()
     notifies = [m for _, m in orch._agent.messages("notify") if "break" in m["title"].lower()]
-    assert notifies and ("user/kevin", "break_due") in mqtt.events
-    payload = mqtt.published[mqtt.user_state_topic("kevin")]
+    assert notifies and ("user/kevin", "break_due") in api.events
+    payload = api.users["kevin"]
     assert payload["breaks_enabled"] is True and payload["break_details"]["reminders_today"] == 1
     orch.dispatch("user_kevin_breaks_enabled", "OFF")
     orch._holder["now"] = now.replace(minute=3)
     orch.tick()
-    assert mqtt.published[mqtt.user_state_topic("kevin")]["breaks_enabled"] is False
+    assert api.users["kevin"]["breaks_enabled"] is False
 
 
 def test_reward_button_grants_minutes_once_per_day():
     now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now, RULES_YAML)
+    orch, sessions, blocker, api = build(now, RULES_YAML)
     sessions.sessions = [session()]
     orch.tick()
     assert orch.dispatch("user_kevin_reward_homework", "PRESS")["ok"]
     assert orch.timekeeper.bonus_seconds("kevin", now.date()) == 20 * 60
     r = orch.dispatch("user_kevin_reward_homework", "PRESS")
     assert not r["ok"] and "already" in r["error"]
-    assert ("user/kevin", "reward_claimed") in mqtt.events
+    assert ("user/kevin", "reward_claimed") in api.events
     orch.dispatch("user_kevin_add_minutes", "7")
     assert orch.timekeeper.bonus_seconds("kevin", now.date()) == 27 * 60
     orch.tick()
-    payload = mqtt.published[mqtt.user_state_topic("kevin")]
+    payload = api.users["kevin"]
     assert payload["earned_minutes"] == 20 and payload["add_minutes"] == 0
 
 
@@ -435,30 +443,30 @@ time_limits:
 
 def test_parent_pin_gates_grants_but_not_tightening():
     now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now, PIN_YAML)
+    orch, sessions, blocker, api = build(now, PIN_YAML)
     sessions.sessions = [session()]
     orch.tick()
     # loosening without PIN is refused and recorded
     r = orch.dispatch("user_kevin_add_15", "PRESS")
     assert not r["ok"] and orch.timekeeper.bonus_seconds("kevin", now.date()) == 0
-    assert ("pc", "pin_wrong") not in mqtt.events
+    assert ("pc", "pin_wrong") not in api.events
     orch.tick()
-    payload = mqtt.published[mqtt.user_state_topic("kevin")]
+    payload = api.users["kevin"]
     assert payload["limit_details"]["last_refusal"]["reason"] == "parent pin required"
-    assert mqtt.published[mqtt.state_topic]["parent_unlocked"] is False
+    assert api.pc["parent_unlocked"] is False
     # tightening never needs the PIN
     assert orch.dispatch("user_kevin_blocked", "ON")["ok"] and orch.timekeeper.manually_blocked("kevin")
     assert not orch.dispatch("user_kevin_blocked", "OFF")["ok"]
     # wrong PIN, then the right one via the text entity
     orch.dispatch("parent_pin", "0000")
-    assert ("pc", "pin_wrong") in mqtt.events
+    assert ("pc", "pin_wrong") in api.events
     orch.dispatch("parent_pin", "2468")
-    assert ("pc", "parent_unlocked") in mqtt.events
+    assert ("pc", "parent_unlocked") in api.events
     assert orch.dispatch("user_kevin_add_15", "PRESS")["ok"]
     assert orch.dispatch("user_kevin_blocked", "OFF")["ok"]
     orch.tick()
-    assert mqtt.published[mqtt.state_topic]["parent_unlocked"] is True
-    assert mqtt.published[mqtt.state_topic]["parent_pin_state"] == ""
+    assert api.pc["parent_unlocked"] is True
+    assert api.pc["parent_pin_state"] == ""
     # inline PIN in a JSON command works even after the unlock window
     orch.pin.lock()
     assert not orch.dispatch("cmd", {"action": "add_minutes", "user": "kevin", "minutes": 5})["ok"]
@@ -471,36 +479,36 @@ def test_parent_pin_gates_grants_but_not_tightening():
 
 def test_bedtime_payload_and_extension():
     night = datetime(2026, 9, 28, 21, 30, 0)
-    orch, sessions, blocker, mqtt = build(night, PIN_YAML)
+    orch, sessions, blocker, api = build(night, PIN_YAML)
     orch.pin.try_unlock("2468")
     sessions.sessions = [session()]
     orch.tick()
-    payload = mqtt.published[mqtt.user_state_topic("kevin")]
+    payload = api.users["kevin"]
     assert payload["past_bedtime"] is True and payload["bedtime"] == "21:00" and payload["limiting_factor"] == "bedtime"
     assert blocker.state.get("kevin") is True
-    assert ("user/kevin", "bedtime") in mqtt.events
+    assert ("user/kevin", "bedtime") in api.events
     orch.dispatch("user_kevin_bedtime_extension", "60")
     orch._holder["now"] = night.replace(second=5)
     orch.tick()
-    payload = mqtt.published[mqtt.user_state_topic("kevin")]
+    payload = api.users["kevin"]
     assert payload["past_bedtime"] is False and payload["bedtime"] == "22:00" and payload["bedtime_extension_minutes"] == 60
     assert blocker.state.get("kevin") is False
 
 
 def test_weekly_limit_number_entity_and_payload():
     now = datetime(2026, 9, 30, 12, 0, 0)  # Wednesday
-    orch, sessions, blocker, mqtt = build(now)
+    orch, sessions, blocker, api = build(now)
     orch.store.add_usage("kevin", datetime(2026, 9, 28).date(), active=50 * 60)
     orch.store.add_usage("kevin", datetime(2026, 9, 29).date(), active=50 * 60)
     sessions.sessions = [session()]
     orch.dispatch("user_kevin_weekly_limit", "120")
     orch.tick()
-    payload = mqtt.published[mqtt.user_state_topic("kevin")]
+    payload = api.users["kevin"]
     assert payload["weekly_limit"] == 120 and payload["weekly_used_minutes"] >= 100
     assert payload["weekly_remaining_minutes"] <= 20
     orch.dispatch("user_kevin_weekly_limit", "0")
     orch.tick()
-    assert mqtt.published[mqtt.user_state_topic("kevin")]["weekly_limit"] == 0
+    assert api.users["kevin"]["weekly_limit"] == 0
 
 
 def test_screenshot_flow_with_fake_agent(tmp_path):
@@ -516,12 +524,14 @@ def test_screenshot_flow_with_fake_agent(tmp_path):
             - {name: kevin, daily_limit_minutes: 60}
             - {name: dad, unlimited: true}
     """ % str(tmp_path / "db.sqlite").replace("\\", "/")
-    orch, sessions, blocker, mqtt = build(now, yaml_text, agent=True)
+    orch, sessions, blocker, api = build(now, yaml_text, agent=True)
     orch._agent.connected.add(2)
     sessions.sessions = [session(), session(user="dad", sid=3)]
     orch.tick()
-    assert "button/user_kevin_screenshot" in mqtt.discovery and "camera/user_kevin_screenshot_image" in mqtt.discovery
-    assert "camera/user_dad_screenshot_image" not in mqtt.discovery  # parents are never captured by default
+    catalog = {e["key"]: e for e in orch.api_entities()["entities"]}
+    assert catalog["user_kevin_screenshot"]["platform"] == "button"
+    assert catalog["user_kevin_screenshot_image"]["platform"] == "camera"
+    assert "user_dad_screenshot_image" not in catalog  # parents are never captured by default
     assert not orch.dispatch("user_dad_screenshot", "PRESS")["ok"]
     r = orch.dispatch("user_kevin_screenshot", "PRESS")
     assert r["ok"]
@@ -531,9 +541,9 @@ def test_screenshot_flow_with_fake_agent(tmp_path):
     orch.on_agent_message(2, {"type": "screenshot", "id": req["id"], "format": "jpeg", "width": 640, "height": 360,
                               "data": base64.b64encode(b"JPEGDATA").decode()})
     orch.tick()
-    assert mqtt.published["pclink/testpc/user/kevin/screenshot"] == b"JPEGDATA"
-    assert ("user/kevin", "screenshot_taken") in mqtt.events
-    payload = mqtt.published[mqtt.user_state_topic("kevin")]
+    assert orch.api_screenshot("kevin") == (b"JPEGDATA", "jpeg")
+    assert ("user/kevin", "screenshot_taken") in api.events
+    payload = api.users["kevin"]
     assert payload["screenshot"]["width"] == 640 and payload["screenshot"]["bytes"] == 8
     saved = list((tmp_path / "screenshots").iterdir())
     assert len(saved) == 1 and saved[0].name.startswith("kevin-")
@@ -544,7 +554,7 @@ def test_screenshot_flow_with_fake_agent(tmp_path):
 
 def test_volume_mute_launch_close_commands_reach_agents():
     now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now, """
+    orch, sessions, blocker, api = build(now, """
         device: {name: TestPC}
         telemetry: {interval_seconds: 0}
         time_limits: {users: [{name: kevin, daily_limit_minutes: 60}]}
@@ -555,9 +565,10 @@ def test_volume_mute_launch_close_commands_reach_agents():
     sessions.sessions = [session()]
     attach(orch, sessions, 2, report(name="notepad.exe", volume=40, muted=False))
     orch.tick()
-    assert "button/launch_minecraft" in mqtt.discovery and "button/close_minecraft" in mqtt.discovery
-    assert "number/user_kevin_volume" in mqtt.discovery
-    payload = mqtt.published[mqtt.user_state_topic("kevin")]
+    catalog = {e["key"]: e["platform"] for e in orch.api_entities()["entities"]}
+    assert catalog["launch_minecraft"] == "button" and catalog["close_minecraft"] == "button"
+    assert catalog["user_kevin_volume"] == "number"
+    payload = api.users["kevin"]
     assert payload["volume"] == 40 and payload["muted"] is False
     orch.dispatch("user_kevin_volume", "70")
     orch.dispatch("user_kevin_muted", "ON")
@@ -570,23 +581,22 @@ def test_volume_mute_launch_close_commands_reach_agents():
     assert not orch.dispatch("cmd", {"action": "close_app", "process": "explorer.exe"})["ok"]
 
 
-def test_device_triggers_and_new_entities_are_discovered():
+def test_device_triggers_and_new_entities_are_in_the_catalog():
     now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now, RULES_YAML)
+    orch, sessions, blocker, api = build(now, RULES_YAML)
     sessions.sessions = [session()]
     orch.tick()
-    assert "device_automation/trigger_kevin_time_up" in mqtt.discovery
-    trig = mqtt.discovery["device_automation/trigger_kevin_time_up"]
-    assert trig["automation_type"] == "trigger" and trig["topic"].endswith("/event/user/kevin") and trig["payload"] == "time_up"
-    assert "device_automation/trigger_pc_started" in mqtt.discovery
-    assert ("pc", "started") in mqtt.events
+    cat = orch.api_entities()
+    assert "time_up" in cat["triggers"]["user"] and "started" in cat["triggers"]["pc"]
+    assert ("pc", "started") in api.events
+    catalog = {e["key"]: e for e in cat["entities"]}
     for oid in ("sensor/user_kevin_presence", "sensor/user_kevin_rule_youtube", "switch/user_kevin_rule_roblox_enabled",
                 "number/user_kevin_rule_youtube_limit_today", "switch/user_kevin_focus_mode", "switch/user_kevin_breaks_enabled",
                 "button/user_kevin_reward_homework", "number/user_kevin_add_minutes", "number/user_kevin_weekly_limit",
                 "switch/parent_present", "button/reload_config", "binary_sensor/anyone_present"):
-        assert oid in mqtt.discovery, oid
-    tpl = mqtt.discovery["sensor/user_kevin_rule_youtube"]["value_template"]
-    assert "value_json['rules']['youtube']['state']" in tpl
+        platform, key = oid.split("/")
+        assert key in catalog and catalog[key]["platform"] == platform, oid
+    assert catalog["user_kevin_rule_youtube"]["value"] == "rules.youtube.state"
 
 
 def test_hot_reload_applies_new_limits_and_flags_restart_sections(tmp_path):
@@ -599,7 +609,7 @@ time_limits:
   users:
     - {name: kevin, daily_limit_minutes: 60}
 """)
-    orch, sessions, blocker, mqtt = build(now)
+    orch, sessions, blocker, api = build(now)
     orch.cfg.source_path = str(cfg_path)
     orch._config_mtime = orch._stat_config()
     sessions.sessions = [session()]
@@ -608,20 +618,20 @@ time_limits:
     cfg_path.write_text("""
 device: {name: TestPC}
 telemetry: {interval_seconds: 0}
-mqtt: {host: other-broker}
+api: {enabled: true, port: 9999}
 time_limits:
   users:
     - {name: kevin, daily_limit_minutes: 30}
     - {name: sarah, daily_limit_minutes: 45}
 """)
     result = orch.reload_config()
-    assert result["ok"] and result["restart_needed"] == ["mqtt"]
+    assert result["ok"] and result["restart_needed"] == ["api.port"]
     assert orch.timekeeper.status("kevin", now).limit_minutes == 30
     assert "sarah" in orch._users
     orch.tick()
-    assert mqtt.user_state_topic("sarah") in mqtt.published
-    assert ("pc", "config_reloaded") in mqtt.events
-    assert mqtt.published[mqtt.state_topic]["service_info"]["restart_needed"] == ["mqtt"]
+    assert "sarah" in api.users
+    assert ("pc", "config_reloaded") in api.events
+    assert api.pc["service_info"]["restart_needed"] == ["api.port"]
     # invalid file is rejected and the old config stays
     cfg_path.write_text("time_limits: {block_method: nuke}")
     result = orch.reload_config()
@@ -636,7 +646,7 @@ time_limits:
 
 def test_api_backend_methods_and_json_command_results():
     now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now)
+    orch, sessions, blocker, api = build(now)
     sessions.sessions = [session()]
     orch.tick()
     assert orch.api_health()["ok"]
@@ -654,9 +664,9 @@ def test_api_backend_methods_and_json_command_results():
     assert any(e["kind"] == "bonus" for e in orch.api_events(20, "kevin"))
 
 
-def test_fleet_rollup_published_by_leader_and_shared_budget():
+def test_shared_budget_counts_usage_on_other_pcs():
     now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now, """
+    orch, sessions, blocker, api = build(now, """
         device: {name: aaa-pc}
         telemetry: {interval_seconds: 0}
         time_limits:
@@ -664,38 +674,27 @@ def test_fleet_rollup_published_by_leader_and_shared_budget():
           users: [{name: kevin, daily_limit_minutes: 60}]
     """)
     assert orch.fleet is not None
-    orch.on_peer_message("pclink/zzz-laptop/availability", b"online")
-    orch.on_peer_message("pclink/zzz-laptop/user/kevin/state", json.dumps({
-        "user": "kevin", "name": "Kevin", "date": now.date().isoformat(), "used_minutes": 45, "status": "active",
+    r = orch.api_command({"action": "peer_usage", "peers": {"zzz-laptop": {"name": "Laptop", "users": {"kevin": {
+        "user": "kevin", "date": now.date().isoformat(), "used_minutes": 45, "status": "active",
         "presence": "active", "logged_in": True, "managed": True, "remaining_minutes": 15,
         "history": [{"date": now.date().isoformat(), "active_minutes": 45}],
-    }).encode())
+    }}}}})
+    assert r["ok"] and r["peers"] == 1 and r["shared_budget"] is True
     sessions.sessions = [session()]
     orch.store.add_usage("kevin", now.date(), active=10 * 60)
     orch.tick()
-    payload = mqtt.published[mqtt.user_state_topic("kevin")]
+    payload = api.users["kevin"]
     assert payload["remaining_minutes"] == 5  # 60 - 10 local - 45 on the laptop
     assert payload["weekly_details"]["other_pcs_today_minutes"] == 45
-    # aaa-pc sorts before zzz-laptop -> we are leader and publish the roll-up
-    assert orch.fleet.is_leader()
-    rollup = mqtt.published["pclink/fleet/state"]
-    assert rollup["pcs_online"] == 2 and rollup["any_pc_in_use"]
-    user_rollup = mqtt.published["pclink/fleet/user/kevin/state"]
-    assert user_rollup["total_minutes_today"] == 55 and sorted(user_rollup["active_on"]) == ["aaa_pc", "zzz-laptop"]
-    assert "fleet:sensor/fleet_user_kevin_total_today" in mqtt.discovery
-    assert mqtt.discovery["fleet:sensor/fleet_user_kevin_total_today"]["device"]["identifiers"] == ["pclink_fleet"]
-    # a peer with a smaller id takes over leadership
-    orch.on_peer_message("pclink/000-first/availability", b"online")
-    assert not orch.fleet.is_leader()
 
 
 # ---------------------------------------------------------------------------
-# local API backend: entity catalog, "set" action, screenshots, running without MQTT
+# local API backend: entity catalog, "set" action, screenshots, running without the API
 # ---------------------------------------------------------------------------
 
 def test_api_entities_catalog_and_set_action():
     now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now)
+    orch, sessions, blocker, api = build(now)
     sessions.sessions = [session()]
     orch.tick()
     cat = orch.api_entities()
@@ -721,12 +720,12 @@ def test_api_entities_catalog_and_set_action():
     assert not orch.api_command({"action": "set"})["ok"]
     assert not orch.api_command({"action": "set", "entity": "cmd", "value": {}})["ok"]
     assert "unknown" in orch.api_command({"action": "set", "entity": "nonsense", "value": "x"})["error"]
-    assert orch._last_api_push == 0.0  # a command forces the next state push
+    assert orch._last_api_push == float("-inf")  # a command forces the next state push
 
 
 def test_set_action_is_pin_gated_and_reports_the_reason():
     now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now, PIN_YAML)
+    orch, sessions, blocker, api = build(now, PIN_YAML)
     sessions.sessions = [session()]
     orch.tick()
     r = orch.api_command({"action": "set", "entity": "user_kevin_add_15", "value": "PRESS"})
@@ -742,7 +741,7 @@ def test_set_action_is_pin_gated_and_reports_the_reason():
 def test_api_screenshot_bytes_are_kept():
     import base64
     now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now, """
+    orch, sessions, blocker, api = build(now, """
         device: {name: TestPC}
         telemetry: {interval_seconds: 0}
         screenshots: {enabled: true, require_pin: false, format: png}
@@ -761,17 +760,17 @@ def test_api_screenshot_bytes_are_kept():
     assert orch.api_screenshot("nobody") is None
 
 
-def test_runs_without_mqtt_and_still_serves_the_catalog():
+def test_runs_without_the_api_and_still_serves_the_catalog():
     import yaml
     now = datetime(2026, 9, 28, 12, 0, 0)
     cfg = Config.from_dict(yaml.safe_load("""
         device: {name: TestPC}
-        mqtt: {enabled: false}
+        api: {enabled: false}
         telemetry: {interval_seconds: 0}
         time_limits: {users: [{name: kevin, daily_limit_minutes: 60}]}
     """))
     sessions = FakeSessions()
-    orch = Orchestrator(cfg, store=Store(":memory:"), sessions=sessions, blocker=FakeBlocker(), mqtt=None,
+    orch = Orchestrator(cfg, store=Store(":memory:"), sessions=sessions, blocker=FakeBlocker(), api=None,
                         clock=lambda: now)
     assert orch.fleet is None
     sessions.sessions = [session()]
@@ -780,62 +779,19 @@ def test_runs_without_mqtt_and_still_serves_the_catalog():
     cat = orch.api_entities()
     assert "user_kevin_time_remaining" in {e["key"] for e in cat["entities"]}
     assert orch.api_users()["kevin"]["status"] == "active"
-    assert orch.api_health()["name"] == "TestPC" and orch.api_health()["mqtt_connected"] is False
+    assert orch.api_health()["name"] == "TestPC"
     assert orch.api_command({"action": "set", "entity": "user_kevin_blocked", "value": "ON"})["ok"]
 
 
-def test_mqtt_discovery_can_be_turned_off():
-    now = datetime(2026, 9, 28, 12, 0, 0)
-    orch, sessions, blocker, mqtt = build(now, """
-        device: {name: TestPC}
-        mqtt: {discovery: false}
-        telemetry: {interval_seconds: 0}
-        time_limits: {users: [{name: kevin, daily_limit_minutes: 60}]}
-    """)
-    sessions.sessions = [session()]
-    orch.tick()
-    assert mqtt.discovery == {}                       # no HA discovery payloads
-    assert mqtt.state_topic in mqtt.published         # state still flows for other PCs (fleet)
-    assert mqtt.user_state_topic("kevin") in mqtt.published
-
-
-def test_mqtt_reconnect_defers_resync_to_the_loop():
-    """on_mqtt_connected runs on paho's thread: it must only flag a resync; the
-    republish happens inside tick() under the orchestrator lock."""
-    import threading
-
-    now = datetime(2026, 9, 28, 12, 0, 0)
-    res = build(now)
-    orch, sessions = res[0], res[1]
-    mqtt = orch.mqtt
-    sessions.sessions = [session()]
-    orch.tick()
-    assert "sensor/cpu_percent" in mqtt.discovery
-    mqtt.discovery.clear()
-
-    t = threading.Thread(target=orch.on_mqtt_connected)
-    t.start()
-    t.join()
-    assert orch._resync_requested is True
-    assert "sensor/cpu_percent" not in mqtt.discovery  # nothing touched off-loop
-
-    orch.tick()
-    assert orch._resync_requested is False
-    assert "sensor/cpu_percent" in mqtt.discovery  # republished on the loop
-    user_topic = mqtt.user_state_topic("kevin")
-    assert user_topic in mqtt.published
-
-
-def test_enforcement_continues_without_mqtt():
+def test_enforcement_continues_without_home_assistant():
     """Time accounting and enforcement never depend on Home Assistant being reachable."""
     now = datetime(2026, 9, 28, 12, 0, 0)
-    res = build(now)
-    orch, sessions, blocker = res[0], res[1], res[2]
-    orch.mqtt.connected = False
+    orch, sessions, blocker, api = build(now)
+    api.client_count = 0   # the integration is not connected
     orch.store.add_usage("kevin", now.date(), active=61 * 60)
     sessions.sessions = [session()]
     orch.tick()
-    assert blocker.state.get("kevin") is True  # login block applied while "offline"
+    assert blocker.state.get("kevin") is True  # login block applied while Home Assistant is away
     orch._holder["now"] = now.replace(minute=2)
     orch.tick()
-    assert 2 in sessions.logged_off  # logoff enforced while "offline"
+    assert 2 in sessions.logged_off  # logoff enforced while Home Assistant is away

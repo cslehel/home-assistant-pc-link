@@ -9,7 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .api import PclinkApiError
+from .api import PclinkApiError, PclinkAuthError, PclinkThrottledError
 from .coordinator import PclinkCoordinator
 from .entity import PclinkEntity, async_setup_platform_entities
 
@@ -50,8 +50,18 @@ class PclinkCamera(PclinkEntity, Camera):
             return None
         if self._image is not None and stamp == self._image_stamp:
             return self._image
+        if self.coordinator.wrong_pc is not None:  # never ask a different PC for a picture
+            return self._image
+        if self.coordinator.throttled_for() > 0:   # the PC asked to wait: not asked before then
+            return self._image
         try:
             data = await self.coordinator.client.screenshot(str(self.spec.get("user", "")))
+        except PclinkThrottledError as exc:
+            self.coordinator.note_throttle(exc.retry_after)
+            return self._image
+        except PclinkAuthError:
+            self.coordinator.async_start_reauth("the API token was rejected for a screenshot")
+            return self._image
         except PclinkApiError as exc:
             _LOGGER.debug("screenshot fetch failed: %s", exc)
             return self._image

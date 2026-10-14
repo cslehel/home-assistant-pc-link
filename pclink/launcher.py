@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from .config import AgentConfig
+from .ipc import remember_launch
 from .runtime import AGENT_EXE, is_frozen
 
 log = logging.getLogger(__name__)
@@ -118,11 +119,13 @@ class AgentLauncher:
             env["PCLINK_IPC_HOST"] = self.cfg.ipc_host
             env["PCLINK_IPC_PORT"] = str(self.cfg.ipc_port)
             env["PCLINK_AGENT_CONFIG"] = json.dumps(self.agent_settings)
+            env["PCLINK_SERVICE_PID"] = str(os.getpid())   # the agent never closes this process, whatever it is asked
             env["PYTHONIOENCODING"] = "utf-8"
             si = proc.STARTUPINFO()
             si.lpDesktop = "winsta0\\default"
             si.dwFlags = con.STARTF_USESHOWWINDOW
             si.wShowWindow = con.SW_HIDE
+            remember_launch(session_id, token)   # the agent server answers this agent's challenge with it
             flags = con.CREATE_UNICODE_ENVIRONMENT | con.CREATE_NEW_PROCESS_GROUP | getattr(con, "CREATE_NO_WINDOW", 0x08000000)
             handle, thread, pid, _tid = proc.CreateProcessAsUser(user_token, None, self.command, None, None, False,
                                                                  flags, env, self.cwd, si)

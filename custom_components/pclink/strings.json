@@ -8,17 +8,21 @@
         "data": {
           "host": "Host",
           "port": "Port",
-          "token": "API token"
+          "token": "API token",
+          "tls": "HTTPS",
+          "fingerprint": "Certificate fingerprint"
         },
         "data_description": {
           "host": "IP address or host name of the PC.",
           "port": "api.port on the PC (default 47392).",
+          "tls": "Switch on when the PC serves HTTPS (api.tls_cert and api.tls_key in its config.yaml).",
+          "fingerprint": "SHA-256 fingerprint of the PC's certificate, as `pclink make-cert` prints it. Needed for a self-signed certificate; only that certificate is then accepted.",
           "token": "api.token from the PC's config.yaml."
         }
       },
       "zeroconf_confirm": {
         "title": "Add {name}",
-        "description": "{name} was found at {host}. Enter its API token (api.token in config.yaml on the PC).",
+        "description": "{name} was found at {host}. Connection: {security}. Anything on the network can announce itself, so compare this with what setup-api printed on the PC before you enter its API token (api.token in config.yaml on the PC).",
         "data": {
           "token": "API token"
         }
@@ -32,19 +36,34 @@
       },
       "reconfigure": {
         "title": "Reconfigure {name}",
-        "description": "Change the address, port or token of this PC.",
+        "description": "Change the address, port or token of this PC. Its connection now: {security}.",
         "data": {
           "host": "Host",
           "port": "Port",
-          "token": "API token"
+          "token": "API token",
+          "tls": "HTTPS",
+          "fingerprint": "Certificate fingerprint"
+        },
+        "data_description": {
+          "host": "IP address or host name of the PC.",
+          "port": "api.port on the PC (default 47392).",
+          "tls": "Switch on when the PC serves HTTPS (api.tls_cert and api.tls_key in its config.yaml).",
+          "fingerprint": "SHA-256 fingerprint of the PC's certificate, as `pclink make-cert` prints it. Needed for a self-signed certificate; only that certificate is then accepted.",
+          "token": "Leave empty to keep the current token - only possible for the current address, or with the certificate fingerprint left as it is."
         }
       }
     },
     "error": {
       "cannot_connect": "Could not connect. Check the address, that api.enabled is true, api.host is 0.0.0.0 and the Windows firewall allows the port.",
-      "invalid_auth": "The token was rejected.",
+      "invalid_auth": "The token was rejected, or it is the read-only token.",
+      "invalid_host": "That is not a host name or an address.",
+      "invalid_fingerprint": "A SHA-256 fingerprint has 64 hexadecimal digits.",
+      "tls_error": "The PC's certificate was not accepted. Check the fingerprint, and that HTTPS is switched on here exactly when the PC serves it.",
       "outdated": "The PC Link service on that PC is too old for this integration; update it.",
       "wrong_device": "That address belongs to a different PC.",
+      "token_required": "Enter the API token: it is only kept for the address the PC has now, or when the PC has to show the pinned certificate.",
+      "too_many_attempts": "The PC refuses this address for a while after too many wrong tokens. Wait a few minutes and try again.",
+      "busy": "The PC has no connection free right now. Try again in a few seconds.",
       "unknown": "Unexpected error."
     },
     "abort": {
@@ -52,6 +71,7 @@
       "reauth_successful": "The token was updated.",
       "reconfigure_successful": "The PC was reconfigured.",
       "no_id": "The discovered service did not identify itself.",
+      "wrong_device": "The PC at that address is not the one that was discovered.",
       "unknown": "Unexpected error."
     }
   },
@@ -74,6 +94,14 @@
       "screenshot_taken": "{subtype} had a screenshot taken",
       "presence_away": "{subtype} left the seat",
       "presence_back": "{subtype} came back to the seat",
+      "app_close_failed": "{subtype} had an app that could not be closed",
+      "tamper": "{subtype} may have tampered with PC Link",
+      "time_requested": "{subtype} asked for more time",
+      "time_request_approved": "{subtype} got a time request approved",
+      "time_request_denied": "{subtype} got a time request denied",
+      "time_request_expired": "{subtype} had a time request expire",
+      "profile_changed": "{subtype} was switched to another profile",
+      "weekly_summary": "{subtype} has a new weekly summary",
       "started": "Service started",
       "config_reloaded": "Configuration reloaded",
       "parent_unlocked": "Parent PIN entered",
@@ -82,7 +110,93 @@
       "reboot_pending": "Needs a reboot for updates",
       "updates_available": "Has Windows updates pending",
       "usb_changed": "USB devices changed",
-      "printer_error": "Printer reported an error"
+      "printer_error": "Printer reported an error",
+      "degraded": "Service is not working properly",
+      "config_invalid": "Started from the last working configuration"
+    }
+  },
+  "issues": {
+    "wrong_pc": {
+      "title": "{found_name} answers at {address}, the address configured for {name}",
+      "fix_flow": {
+        "step": {
+          "address": {
+            "title": "Where is {name} now?",
+            "description": "The address configured for this PC is now used by another PC Link PC, so nothing is read from it or sent to it. Enter the address {name} has now, and its API token unless the certificate stays pinned. Its connection now: {security}.",
+            "data": {
+              "host": "Host",
+              "port": "Port",
+              "token": "API token",
+              "tls": "HTTPS",
+              "fingerprint": "Certificate fingerprint"
+            },
+            "data_description": {
+              "host": "IP address or host name of the PC.",
+              "port": "api.port on the PC (default 47392).",
+              "tls": "Switch on when the PC serves HTTPS (api.tls_cert and api.tls_key in its config.yaml).",
+              "fingerprint": "SHA-256 fingerprint of the PC's certificate, as `pclink make-cert` prints it. Needed for a self-signed certificate; only that certificate is then accepted.",
+              "token": "Leave empty to keep the current token - only possible for the current address, or with the certificate fingerprint left as it is."
+            }
+          }
+        },
+        "error": {
+          "cannot_connect": "Could not connect. Check the address, that api.enabled is true, api.host is 0.0.0.0 and the Windows firewall allows the port.",
+          "invalid_auth": "The token was rejected, or it is the read-only token.",
+          "invalid_host": "That is not a host name or an address.",
+          "invalid_fingerprint": "A SHA-256 fingerprint has 64 hexadecimal digits.",
+          "tls_error": "The PC's certificate was not accepted. Check the fingerprint, and that HTTPS is switched on here exactly when the PC serves it.",
+          "outdated": "The PC Link service on that PC is too old for this integration; update it.",
+          "wrong_device": "That address belongs to a different PC.",
+          "token_required": "Enter the API token: it is only kept for the address the PC has now, or when the PC has to show the pinned certificate.",
+          "too_many_attempts": "The PC refuses this address for a while after too many wrong tokens. Wait a few minutes and try again.",
+          "busy": "The PC has no connection free right now. Try again in a few seconds.",
+          "unknown": "Unexpected error."
+        },
+        "abort": {
+          "unknown": "The PC is no longer configured."
+        }
+      }
+    },
+    "pc_moved": {
+      "title": "{name} announced itself at a new address",
+      "fix_flow": {
+        "step": {
+          "address": {
+            "title": "Use the new address of {name}?",
+            "description": "The PC cannot be reached at the configured address but announced itself on the network at another one, which is filled in below. Anything on the network can send such an announcement: check the address, and enter the API token again - only a PC that has to show the pinned certificate gets the stored one. The PC there has to be {name}. Its connection now: {security}.",
+            "data": {
+              "host": "Host",
+              "port": "Port",
+              "token": "API token",
+              "tls": "HTTPS",
+              "fingerprint": "Certificate fingerprint"
+            },
+            "data_description": {
+              "host": "IP address or host name of the PC.",
+              "port": "api.port on the PC (default 47392).",
+              "tls": "Switch on when the PC serves HTTPS (api.tls_cert and api.tls_key in its config.yaml).",
+              "fingerprint": "SHA-256 fingerprint of the PC's certificate, as `pclink make-cert` prints it. Needed for a self-signed certificate; only that certificate is then accepted.",
+              "token": "Leave empty to keep the current token - only possible for the current address, or with the certificate fingerprint left as it is."
+            }
+          }
+        },
+        "error": {
+          "cannot_connect": "Could not connect. Check the address, that api.enabled is true, api.host is 0.0.0.0 and the Windows firewall allows the port.",
+          "invalid_auth": "The token was rejected, or it is the read-only token.",
+          "invalid_host": "That is not a host name or an address.",
+          "invalid_fingerprint": "A SHA-256 fingerprint has 64 hexadecimal digits.",
+          "tls_error": "The PC's certificate was not accepted. Check the fingerprint, and that HTTPS is switched on here exactly when the PC serves it.",
+          "outdated": "The PC Link service on that PC is too old for this integration; update it.",
+          "wrong_device": "That address belongs to a different PC.",
+          "token_required": "Enter the API token: it is only kept for the address the PC has now, or when the PC has to show the pinned certificate.",
+          "too_many_attempts": "The PC refuses this address for a while after too many wrong tokens. Wait a few minutes and try again.",
+          "busy": "The PC has no connection free right now. Try again in a few seconds.",
+          "unknown": "Unexpected error."
+        },
+        "abort": {
+          "unknown": "The PC is no longer configured."
+        }
+      }
     }
   },
   "services": {
@@ -92,7 +206,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "user": {
           "name": "User",
@@ -114,7 +228,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "user": {
           "name": "User",
@@ -140,7 +254,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "user": {
           "name": "User",
@@ -158,11 +272,11 @@
     },
     "set_limit": {
       "name": "Set limit",
-      "description": "Override a user's daily or weekly limit. Omit minutes to remove the limit.",
+      "description": "Override a user's limit for today, for weekdays or weekend days, or for the week. Without minutes the override is dropped and the limit from the PC's configuration applies again; the text unlimited (in YAML) removes the limit.",
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "user": {
           "name": "User",
@@ -174,7 +288,7 @@
         },
         "minutes": {
           "name": "Minutes",
-          "description": "New limit in minutes; leave empty for unlimited."
+          "description": "New limit in minutes. Leave empty to return to the configured limit; unlimited (in YAML) for no limit."
         },
         "pin": {
           "name": "Parent PIN",
@@ -188,7 +302,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "user": {
           "name": "User",
@@ -206,7 +320,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "user": {
           "name": "User",
@@ -220,7 +334,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "user": {
           "name": "User",
@@ -238,7 +352,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "user": {
           "name": "User",
@@ -251,6 +365,10 @@
         "allow": {
           "name": "Extra allowed",
           "description": "Additional apps or sites to allow this time (list)."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
         }
       }
     },
@@ -260,7 +378,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "user": {
           "name": "User",
@@ -278,7 +396,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "user": {
           "name": "User",
@@ -300,7 +418,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "user": {
           "name": "User",
@@ -322,11 +440,11 @@
     },
     "rule_limit": {
       "name": "Set rule limit",
-      "description": "Change today's minutes for a per-app or per-site rule.",
+      "description": "Change today's minutes, or the weekly budget, of a per-app or per-site rule.",
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "user": {
           "name": "User",
@@ -338,11 +456,113 @@
         },
         "minutes": {
           "name": "Minutes",
-          "description": "Minutes allowed today; leave empty for unlimited."
+          "description": "Minutes allowed today, or the weekly budget. Leave empty to return to the configured one; unlimited (in YAML) for no limit (for the weekly budget 0 also removes it)."
+        },
+        "scope": {
+          "name": "Scope",
+          "description": "Today's limit (the default) or the rule's weekly budget."
         },
         "pin": {
           "name": "Parent PIN",
           "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
+        }
+      }
+    },
+    "set_rule": {
+      "name": "Create or change a rule",
+      "description": "Create a per-app or per-site rule for a user, or change one - also one from the PC's configuration file. Only the fields given change. Loosening a rule needs the parent PIN.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        },
+        "rule": {
+          "name": "Rule",
+          "description": "Name of the rule. An unknown name creates a new rule."
+        },
+        "apps": {
+          "name": "Programs",
+          "description": "Process names the rule covers, such as RobloxPlayerBeta.exe."
+        },
+        "sites": {
+          "name": "Websites",
+          "description": "Websites the rule covers, such as roblox.com."
+        },
+        "categories": {
+          "name": "Categories",
+          "description": "Site categories (activity.site_categories on the PC) or gaming."
+        },
+        "daily_limit_minutes": {
+          "name": "Daily limit",
+          "description": "Minutes per day: a number, or per day such as weekdays 30 and weekend 60. The text unlimited removes it."
+        },
+        "weekly_limit_minutes": {
+          "name": "Weekly limit",
+          "description": "Minutes per week. The text unlimited removes it."
+        },
+        "allowed_hours": {
+          "name": "Allowed hours",
+          "description": "When it is allowed, such as 16:00-19:00, or per day. The text all removes the restriction."
+        },
+        "blocked": {
+          "name": "Blocked",
+          "description": "Never allowed."
+        },
+        "rule_action": {
+          "name": "When not allowed",
+          "description": "Close the program or tab, or only warn."
+        },
+        "message": {
+          "name": "Message",
+          "description": "Shown to the user instead of the standard text."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
+        }
+      }
+    },
+    "remove_rule": {
+      "name": "Remove a rule",
+      "description": "Remove a rule made with Create or change a rule, or the changes made that way to a rule from the PC's configuration file.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        },
+        "rule": {
+          "name": "Rule",
+          "description": "Name of the rule."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
+        }
+      }
+    },
+    "display": {
+      "name": "Display",
+      "description": "Turn the display of a user's seat off or on (leave the user empty for every seat).",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name; leave empty for every active session."
+        },
+        "enabled": {
+          "name": "On",
+          "description": "On wakes the display, off turns it off."
         }
       }
     },
@@ -352,7 +572,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "user": {
           "name": "User",
@@ -370,7 +590,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "user": {
           "name": "User",
@@ -396,7 +616,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "user": {
           "name": "User",
@@ -410,7 +630,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "user": {
           "name": "User",
@@ -424,7 +644,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "user": {
           "name": "User",
@@ -446,7 +666,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "user": {
           "name": "User",
@@ -460,11 +680,11 @@
     },
     "launch": {
       "name": "Launch app",
-      "description": "Start a configured app, or any command line, in a user's session.",
+      "description": "Start a configured app, or any command line, in a user's session. Only Home Assistant administrators may call it.",
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "name": {
           "name": "App",
@@ -472,7 +692,7 @@
         },
         "command": {
           "name": "Command",
-          "description": "Command line to run instead of a configured app."
+          "description": "Command line to run instead of a configured app. Needs the PC's admin token when api.admin_token is set on the PC; a configured app does not."
         },
         "user": {
           "name": "User",
@@ -486,7 +706,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "name": {
           "name": "App",
@@ -508,7 +728,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "action": {
           "name": "Action",
@@ -530,7 +750,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "mac": {
           "name": "MAC address",
@@ -552,7 +772,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "pin": {
           "name": "Parent PIN",
@@ -566,7 +786,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         }
       }
     },
@@ -576,11 +796,121 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "present": {
           "name": "Present",
           "description": "True when a parent is home."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
+        }
+      }
+    },
+    "answer_time_request": {
+      "name": "Answer a time request",
+      "description": "Approve or decline the extra time a user asked for on the PC.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        },
+        "approve": {
+          "name": "Approve",
+          "description": "On grants the request, off declines it."
+        },
+        "minutes": {
+          "name": "Minutes",
+          "description": "How many minutes to grant; leave empty for what was asked for."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
+        }
+      }
+    },
+    "block_item": {
+      "name": "Block app or website",
+      "description": "Close a program or a website whenever a user opens it.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        },
+        "item": {
+          "name": "App or website",
+          "description": "A program name such as roblox.exe, or a website such as youtube.com."
+        }
+      }
+    },
+    "unblock_item": {
+      "name": "Unblock app or website",
+      "description": "Remove a program or website from a user's block list.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        },
+        "item": {
+          "name": "App or website",
+          "description": "The entry to remove, or all to clear the list."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
+        }
+      }
+    },
+    "usage_report": {
+      "name": "Usage report",
+      "description": "Applications, games and websites a user used in the last hours, longest first. Returns the report as response data.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name of the user."
+        },
+        "hours": {
+          "name": "Hours",
+          "description": "How far back to look (default: the PC's activity.report_hours, 10)."
+        }
+      }
+    },
+    "set_profile": {
+      "name": "Set profile",
+      "description": "Switch a user (or, without a user, everyone who has it) to a profile from the PC's configuration, such as holiday. A profile that gives more time needs the parent PIN.",
+      "fields": {
+        "device_id": {
+          "name": "PC",
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
+        },
+        "user": {
+          "name": "User",
+          "description": "Windows login name; leave empty for every user that has the profile."
+        },
+        "profile": {
+          "name": "Profile",
+          "description": "Name of the profile; normal returns to the usual limits."
+        },
+        "pin": {
+          "name": "Parent PIN",
+          "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
         }
       }
     },
@@ -590,7 +920,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         }
       }
     },
@@ -600,7 +930,7 @@
       "fields": {
         "device_id": {
           "name": "PC",
-          "description": "The PC to send this to. Optional when only one PC is configured."
+          "description": "The PC to send this to. Optional when only one PC is configured. PC Link (all PCs) sends it to every PC, for the actions where that makes sense."
         },
         "data": {
           "name": "Command",
@@ -611,6 +941,11 @@
           "description": "Needed for actions that loosen a limit when a parent PIN is configured and not unlocked."
         }
       }
+    }
+  },
+  "exceptions": {
+    "throttled": {
+      "message": "{pc} asked to wait {seconds} s before it takes commands again; nothing was changed."
     }
   }
 }

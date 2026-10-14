@@ -17,7 +17,7 @@ import socket
 import sys
 import traceback
 
-from .config import Config, default_config_path
+from .config import Config, data_dir, default_config_path
 from .logsetup import setup_logging
 from .runtime import cli_name, service_binary
 
@@ -32,7 +32,7 @@ if sys.platform == "win32":
     class PCLinkService(win32serviceutil.ServiceFramework):
         _svc_name_ = "PCLink"
         _svc_display_name_ = "Home Assistant PC Link"
-        _svc_description_ = "Screen-time limits, login blocking and PC telemetry for Home Assistant (MQTT)."
+        _svc_description_ = "Screen-time limits, login blocking and PC telemetry for Home Assistant."
 
         def __init__(self, args):
             super().__init__(args)
@@ -76,15 +76,41 @@ if sys.platform == "win32":
                                       (self._svc_name_, ""))
 
         def _run(self):
+            from . import hardening
+
             config_path = default_config_path()
+            # Before anything is written: a data folder that is a link leads wherever somebody
+            # wanted it to.  Not even the log goes there.
+            problem = hardening.data_dir_problem(data_dir())
+            if problem:
+                raise hardening.DataDirError(problem)
             fallback_logs = os.path.join(os.path.dirname(config_path), "logs")
             setup_logging(fallback_logs, "INFO")
+            # The folder holds the configuration, and the configuration says what runs as
+            # SYSTEM.  If it cannot be restricted to administrators the service does not
+            # start (hardening.ensure_data_dir says why that is the lesser evil); Windows
+            # starts it again after a few seconds, so a passing problem heals by itself.
+            try:
+                hardening.ensure_data_dir(data_dir())
+            except hardening.DataDirError as exc:
+                log.error("NOT starting, the data folder is not safe to use: %s", exc)
+                raise
             log.info("loading config from %s", config_path)
-            cfg = Config.load(config_path)
+            cfg, config_problem = hardening.load_config_or_last_good(config_path, data_dir())
             setup_logging(cfg.logging.path, cfg.logging.level, max_bytes=cfg.logging.max_bytes, backups=cfg.logging.backups)
+            if config_problem:
+                log.error("CONFIGURATION ERROR: %s. Correct the file; it is read again as soon as it changes.",
+                          config_problem)
+                servicemanager.LogErrorMsg(f"PCLink: {config_problem}")
             from .core import build_orchestrator
 
             self.orchestrator = build_orchestrator(cfg)
+            if config_problem:
+                self.orchestrator.config_problem = config_problem   # for whoever reports the service's health
+                try:
+                    self.orchestrator.store.log_event(None, "config_invalid", config_problem[:300])
+                except Exception:  # noqa: BLE001
+                    log.debug("could not store the configuration error as an event", exc_info=True)
             self.orchestrator.run()
 
     # Standalone build: register "<path>\\pclink.exe service" as the service binary.
@@ -111,12 +137,20 @@ if sys.platform == "win32":
         name = PCLinkService._svc_name_
         # Custom verbs that HandleCommandLine does not know about.
         if argv and argv[0] == "harden":
-            hardening.apply_all(name, harden=True)
+            done = hardening.apply_all(name, harden=True)
+            done["data folder restricted to administrators"] = _secure_data_dir(hardening)
+            for what, ok in done.items():
+                print(f"  {what}: {'ok' if ok else 'FAILED'}")
+            if not all(done.values()):
+                raise SystemExit("Hardening did NOT complete (see above). Run this from an administrator prompt, "
+                                 f"with the {name} service installed.")
             print("service hardened: auto-restart on; only administrators can stop it.")
             print("current descriptor:", hardening.show_acl(name))
             return
         if argv and argv[0] == "unharden":
-            hardening.soften_acl(name)
+            if not hardening.soften_acl(name):
+                raise SystemExit("The service ACL could NOT be restored. Run this from an administrator prompt, "
+                                 f"with the {name} service installed.")
             print("service ACL restored to default; standard controls apply again.")
             return
 
@@ -124,6 +158,11 @@ if sys.platform == "win32":
         argv = [a for a in argv if a != "--no-harden"]
         if "install" in argv and "--startup" not in argv:
             argv = ["--startup", "auto"] + argv
+        if "install" in argv or "update" in argv:
+            # never register a service whose data folder somebody else controls
+            problem = hardening.data_dir_problem(data_dir())
+            if problem:
+                raise SystemExit(f"Not installing: {problem}.")
 
         # Before removing: stop the service, restore logon rights for every managed
         # user (so nobody stays locked out once enforcement is gone) and restore the
@@ -150,20 +189,42 @@ if sys.platform == "win32":
             except Exception:  # noqa: BLE001
                 log.debug("soften before remove failed", exc_info=True)
 
-        win32serviceutil.HandleCommandLine(PCLinkService, argv=[sys.argv[0], *argv])
+        try:
+            win32serviceutil.HandleCommandLine(PCLinkService, argv=[sys.argv[0], *argv])
+        except Exception as exc:  # noqa: BLE001 - pywintypes.error: say what to do instead of a traceback
+            code = getattr(exc, "winerror", None)
+            if code == 5:  # ERROR_ACCESS_DENIED
+                raise SystemExit("Access is denied: service commands need an administrator prompt "
+                                 "(right-click PowerShell or Command Prompt and choose 'Run as administrator').") from None
+            if code == 1060:  # ERROR_SERVICE_DOES_NOT_EXIST
+                raise SystemExit(f"The {name} service is not installed; run '{cli_name()} install' first.") from None
+            raise
 
         # After install, set recovery actions and (unless opted out) harden the ACL.
         if "install" in argv:
-            try:
-                hardening.set_recovery(name)
-                if not no_harden:
-                    hardening.harden_acl(name)
-                    print("Tamper resistance enabled: the service auto-restarts and only")
-                    print("administrators can stop it. Keep monitored users as STANDARD accounts.")
-                    print(f"Run '{cli_name()} unharden' before uninstalling, or use 'remove'")
-                    print("which restores the default ACL automatically.")
-            except Exception:  # noqa: BLE001
-                log.exception("post-install hardening failed")
+            failed = []
+            if not hardening.set_recovery(name):
+                failed.append("auto-restart")
+            if not _secure_data_dir(hardening):
+                failed.append("restricting the data folder to administrators")
+            if not no_harden and not hardening.harden_acl(name):
+                failed.append("service permissions")
+            if failed:
+                raise SystemExit("The service was installed, but this did NOT work: " + ", ".join(failed)
+                                 + f". Run '{cli_name()} harden' from an administrator prompt before starting it.")
+            if not no_harden:
+                print("Tamper resistance enabled: the service auto-restarts and only")
+                print("administrators can stop it. Keep monitored users as STANDARD accounts.")
+                print(f"Run '{cli_name()} unharden' before uninstalling, or use 'remove'")
+                print("which restores the default ACL automatically.")
+
+    def _secure_data_dir(hardening) -> bool:
+        try:
+            hardening.ensure_data_dir(data_dir())
+            return True
+        except hardening.DataDirError as exc:
+            print(f"  data folder: {exc}")
+            return False
 
 else:  # pragma: no cover - non-Windows import guard
 
