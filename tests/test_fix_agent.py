@@ -829,10 +829,13 @@ def test_gsmtc_read_has_a_deadline(monkeypatch):
     assert reader._read_gsmtc() is None and time.monotonic() - t0 < 5        # gave up instead of hanging
     assert reader._gsmtc_failures == 1 and reader._gsmtc_retry_at > time.monotonic()
     loop = reader._loop
+    deadline = time.monotonic() + 5
+    while not reader._pending.done() and time.monotonic() < deadline:   # the late read was cancelled
+        time.sleep(0.01)
 
     async def fine():
         return media.MediaInfo(title="Song", status="playing", source="gsmtc")
 
     reader._gsmtc_async, reader._gsmtc_retry_at = fine, 0.0
     assert reader._read_gsmtc().title == "Song" and reader._loop is loop     # the same event loop is used again
-    loop.close()
+    loop.call_soon_threadsafe(loop.stop)

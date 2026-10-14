@@ -180,6 +180,41 @@ def test_presence_signals_degrade_off_windows():
     assert AgentReport.from_dict(rep.to_dict()).idle_seconds == 42.0
 
 
+def test_media_controls_that_never_answer_do_not_hang_the_poll(monkeypatch):
+    # Windows' media controls can stop answering, and such a call ignores cancellation: the
+    # read must give up by itself and not start a second one next to the stuck one.
+    import asyncio
+    import time
+
+    from pclink.agent import media as media_mod
+
+    monkeypatch.setattr(media_mod, "GSMTC_TIMEOUT_SECONDS", 0.2)
+    started = []
+
+    class Never:
+        def __await__(self):
+            started.append(1)
+            while True:   # swallows cancellation, like the real call
+                try:
+                    yield from asyncio.sleep(3600).__await__()
+                except asyncio.CancelledError:
+                    continue
+
+    class Manager:
+        @staticmethod
+        def request_async():
+            return Never()
+
+    reader = media_mod.MediaInfoReader(enabled=False)
+    reader.enabled = True
+    reader._gsmtc = type("module", (), {"GlobalSystemMediaTransportControlsSessionManager": Manager})
+    t = time.monotonic()
+    assert reader.read(None) is None
+    assert time.monotonic() - t < 2
+    reader._gsmtc_retry_at = 0.0          # the backoff is over: still no second read
+    assert reader.read(None) is None and len(started) == 1
+
+
 def test_png_encoder_produces_valid_png():
     width, height = 3, 2
     stride = (width * 3 + 3) & ~3  # 12

@@ -7,9 +7,11 @@ players and browsers ("Artist - Song", "... - YouTube").
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import sys
+import threading
 import time
 from typing import Optional
 
@@ -115,7 +117,10 @@ class MediaInfoReader:
         self._gsmtc_retry_at = 0.0
         self._last: Optional[MediaInfo] = None
         self._last_at = 0.0
-        self._loop = None              # the event loop the GSMTC reads run on (made on first use)
+        self._loop = None              # the event loop the GSMTC reads run on, in a thread of its own
+        self._pending = None           # the last read handed to that loop
+        self._reading = threading.Event()   # set while a read runs there (a stuck one is never replaced)
+        self._stuck_logged = False
         if enabled and _IS_WIN:
             self._init_gsmtc()
 
@@ -151,19 +156,30 @@ class MediaInfoReader:
         now = time.monotonic()
         if now < self._gsmtc_retry_at:
             return None
+        if self._reading.is_set():
+            # An earlier read never answered and cannot be stopped: start no second one next to
+            # it (window titles meanwhile).  Reads start again should it ever finish.
+            if not self._stuck_logged:
+                self._stuck_logged = True
+                log.info("the media controls stopped answering; now-playing falls back to window titles")
+            return None
         try:
-            import asyncio
-
-            # One event loop for the life of the agent (asyncio.run() built and tore down a
-            # new one every few seconds), and a deadline: these calls go to another process
-            # and have been seen never to answer, which stopped the agent's whole poll.
-            if self._loop is None or self._loop.is_closed():
-                self._loop = asyncio.new_event_loop()
-            info = self._loop.run_until_complete(asyncio.wait_for(self._gsmtc_async(), GSMTC_TIMEOUT_SECONDS))
+            # The reads run on an event loop in a thread of their own, and this thread waits for
+            # the answer with a deadline it enforces itself.  These calls go to another process
+            # and have been seen never to answer - and ignore cancellation, so a deadline inside
+            # the loop (asyncio.wait_for) waited for them forever and stopped the agent's poll.
+            self._reading.set()
+            self._pending = asyncio.run_coroutine_threadsafe(self._gsmtc_read_once(), self._event_loop())
+            info = self._pending.result(timeout=GSMTC_TIMEOUT_SECONDS)
             self._gsmtc_failures = 0
             self._gsmtc_failed = False
+            self._stuck_logged = False
             return info
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - also the deadline (concurrent.futures.TimeoutError)
+            if self._pending is not None and not self._pending.done():
+                # ends a read that honours it; a stuck one keeps running (and _reading stays set) -
+                # this future reads "done" at once either way, so it cannot tell the two apart
+                self._pending.cancel()
             self._gsmtc_failures += 1
             delay = gsmtc_backoff(self._gsmtc_failures)
             self._gsmtc_retry_at = now + delay
@@ -171,6 +187,20 @@ class MediaInfoReader:
             if self._gsmtc_failures in (1, 5):
                 log.debug("GSMTC read failed (%d): %s; retrying in %d s", self._gsmtc_failures, exc, int(delay))
             return None
+
+    def _event_loop(self):
+        """The loop the reads run on, in a daemon thread of its own (started on first use)."""
+        if self._loop is None or self._loop.is_closed():
+            loop = asyncio.new_event_loop()
+            threading.Thread(target=loop.run_forever, name="media-controls", daemon=True).start()
+            self._loop = loop
+        return self._loop
+
+    async def _gsmtc_read_once(self) -> Optional[MediaInfo]:
+        try:
+            return await self._gsmtc_async()
+        finally:
+            self._reading.clear()   # only when the read has really ended, however it did
 
     async def _gsmtc_async(self) -> Optional[MediaInfo]:
         Manager = self._gsmtc.GlobalSystemMediaTransportControlsSessionManager
