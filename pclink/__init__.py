@@ -8,4 +8,4 @@ power control, activity tracking (gaming / browsing / now playing), native HA
 device triggers and shared budgets across PCs.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"

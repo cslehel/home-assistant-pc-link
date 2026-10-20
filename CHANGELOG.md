@@ -4,6 +4,25 @@ All notable changes to this project are listed here. Versions follow
 [semantic versioning](https://semver.org/). The release workflow publishes the
 section of the version being tagged as the release notes.
 
+## [0.4.1] - 2026-10-20
+
+### Install
+
+- **Standalone Windows version:** download `PCLink-0.4.1-windows-x64.zip`
+  below, right-click it, choose **Properties**, tick **Unblock**, extract it
+  and run **install.cmd**. An installed copy is upgraded in place and keeps
+  its configuration; a PC with 0.4.0 updates itself (the *PC Link update*
+  entity in Home Assistant). Details:
+  [installation guide](https://github.com/cslehel/home-assistant-pc-link/blob/main/docs/INSTALL.md).
+
+### Fixed
+
+- Right after installing, the service could stop again at once: Windows
+  refused its first "service started" message for the event log, and the
+  service took that as a fatal error. The installer then reported a failed
+  installation and did not add the firewall rule for the local API. A
+  message the event log refuses is now only noted in PC Link's own log.
+
 ## [0.4.0] - 2026-10-20
 
 ### Install
