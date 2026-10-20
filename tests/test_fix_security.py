@@ -1260,6 +1260,22 @@ def test_init_config_writes_nothing_into_a_folder_that_could_not_be_secured(tmp_
     assert cli.cmd_init_config(["--path", str(folder / "config.yaml")]) == 0 and (folder / "config.yaml").exists()
 
 
+def test_a_refused_event_log_message_does_not_stop_the_service(caplog):
+    """Right after the service was registered, Windows refused its "started" message once
+    (seen on a CI runner): the service crashed and the installer gave up on it."""
+    from pclink.service import event_log
+
+    calls = []
+
+    def refuse(*args):
+        calls.append(args)
+        raise OSError(5, "RegisterEventSource/ReportEvent", "Access is denied.")
+
+    with caplog.at_level(logging.WARNING, "pclink.service"):
+        event_log(refuse, 1, 2, ("PCLink", ""))
+    assert calls == [(1, 2, ("PCLink", ""))] and "could not write to the Windows event log" in caplog.text
+
+
 @pytest.mark.skipif(not WINDOWS, reason="the service wrapper needs pywin32")
 def test_harden_reports_what_really_happened(monkeypatch, capsys):
     service = pytest.importorskip("pclink.service")

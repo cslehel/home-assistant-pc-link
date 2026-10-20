@@ -23,6 +23,17 @@ from .runtime import cli_name, service_binary
 
 log = logging.getLogger(__name__)
 
+
+def event_log(write, *args) -> None:
+    """Write to Windows' Application log, never failing the service over it: right after the
+    service was registered Windows has been seen to refuse the first message (ERROR_ACCESS_DENIED
+    from ReportEvent), and that must not stop the limits from being enforced."""
+    try:
+        write(*args)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not write to the Windows event log: %s", exc)
+
+
 if sys.platform == "win32":
     import servicemanager  # type: ignore
     import win32event  # type: ignore
@@ -63,17 +74,17 @@ if sys.platform == "win32":
                     log.exception("session change handling failed")
 
         def SvcDoRun(self):
-            servicemanager.LogMsg(servicemanager.EVENTLOG_INFORMATION_TYPE, servicemanager.PYS_SERVICE_STARTED,
-                                  (self._svc_name_, ""))
+            event_log(servicemanager.LogMsg, servicemanager.EVENTLOG_INFORMATION_TYPE,
+                      servicemanager.PYS_SERVICE_STARTED, (self._svc_name_, ""))
             try:
                 self._run()
             except Exception:  # noqa: BLE001
-                servicemanager.LogErrorMsg(f"PCLink failed:\n{traceback.format_exc()}")
+                event_log(servicemanager.LogErrorMsg, f"PCLink failed:\n{traceback.format_exc()}")
                 log.exception("service crashed")
                 raise
             finally:
-                servicemanager.LogMsg(servicemanager.EVENTLOG_INFORMATION_TYPE, servicemanager.PYS_SERVICE_STOPPED,
-                                      (self._svc_name_, ""))
+                event_log(servicemanager.LogMsg, servicemanager.EVENTLOG_INFORMATION_TYPE,
+                          servicemanager.PYS_SERVICE_STOPPED, (self._svc_name_, ""))
 
         def _run(self):
             from . import hardening
