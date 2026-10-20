@@ -237,8 +237,11 @@ def test_the_api_takes_its_port_on_ipv6_loopback_too():
             other.close()
     finally:
         srv.stop()
-    # and it is let go again
+    # and it is let go again (on Linux the closed connection keeps the port in TIME_WAIT for a
+    # plain bind; SO_REUSEADDR passes that there, but still not a port somebody listens on)
     s = socket.socket(socket.AF_INET6)
+    if not WINDOWS:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(("::1", port))
     s.close()
 

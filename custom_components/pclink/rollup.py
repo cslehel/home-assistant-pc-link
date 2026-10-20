@@ -292,7 +292,7 @@ class RollupHub:
             # the entry's task: cancelled with it when the PC is unloaded
             target.entry.async_create_background_task(
                 self.hass, self._send_peer_usage(entry_id, target, peers), name=f"{DOMAIN} peer usage {target.pc_id}",
-                eager_start=True)  # older Home Assistant (2024.3) started it lazily by default
+                eager_start=True)  # Home Assistant 2024.3 starts it lazily by default (and always on Python 3.11)
         if self._peer_timer is not None:
             self._peer_timer()
             self._peer_timer = None

@@ -726,13 +726,19 @@ def test_line_reader_skips_an_oversized_line_and_stays_in_step():
     a, b = socket.socketpair()
     try:
         a.settimeout(2)
+        b.settimeout(10)
         reader = ipc._LineReader(a)
-        b.sendall(b'{"n":1}\n' + b"x" * 300_000 + b'\n{"n":2}\n')
+        # sent from a thread: the long line does not fit into the socket buffer (a Linux
+        # socketpair holds about 200 KB), so sendall only finishes while the reader reads
+        sender = threading.Thread(target=b.sendall, args=(b'{"n":1}\n' + b"x" * 300_000 + b'\n{"n":2}\n',), daemon=True)
+        sender.start()
         assert reader.readline(1024, skip=True) == '{"n":1}'
         with pytest.raises(ipc.LineTooLong, match="300000"):
             reader.readline(1024, skip=True)
         assert reader.readline(1024, skip=True) == '{"n":2}'
         assert len(reader._buf) == 0                      # nothing of the long line was kept
+        sender.join(5)
+        assert not sender.is_alive()
         # a whole line with a deadline that passes
         with pytest.raises(socket.timeout):
             reader.readline(1024, deadline=time.monotonic() + 0.2)

@@ -98,8 +98,9 @@ def test_https_certificate_is_made_once_and_kept(tmp_path, capsys):
         code = cli.main(["setup-api", "--config", str(cfg), "--no-restart"])
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"no way to make a certificate here: {exc}")
-    out = capsys.readouterr().out
-    if code == 1 and "could not create the certificate" in out:
+    captured = capsys.readouterr()
+    out = captured.out
+    if code == 1 and "could not create the certificate" in captured.err:
         pytest.skip("no way to make a certificate here")
     assert code == 0
     api = Config.load(str(cfg)).api

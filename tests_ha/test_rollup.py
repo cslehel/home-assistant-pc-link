@@ -1,6 +1,7 @@
 """The "PC Link (all PCs)" roll-up device, worked out inside Home Assistant."""
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import patch
 
@@ -41,6 +42,16 @@ async def add_pc(hass: HomeAssistant, host: str) -> MockConfigEntry:
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     return entry
+
+
+async def settle(hass: HomeAssistant) -> None:
+    """async_block_till_done(), and the peer-usage sends too: Home Assistant 2024.3 does not wait
+    for background tasks, and on Python 3.11 eager_start does not start them at once either."""
+    await hass.async_block_till_done()
+    sends = [t for t in hass._background_tasks if "peer usage" in t.get_name()]
+    if sends:
+        await asyncio.wait(sends)
+        await hass.async_block_till_done()
 
 
 def rollup_entities(hass: HomeAssistant) -> dict[str, str]:
@@ -168,7 +179,7 @@ async def test_shared_budget_pcs_are_told_the_usage_of_the_others(hass: HomeAssi
         den_pc = {**den.pc_state, "shared_budget": True}
         den.ws.push({"type": "hello", "writable": True, "status": den.health_doc})
         den.ws.push({"type": "state", "pc": den_pc, "users": den.user_state})
-        await hass.async_block_till_done()
+        await settle(hass)
         today = den.user_state["kevin"]["date"]
         assert sent(den) == [{"action": "peer_usage", "peers": {"testpc": {"name": "TestPC", "users": {
             "kevin": {"name": "kevin", "date": today, "used_minutes": 30}}}}}]
@@ -178,16 +189,16 @@ async def test_shared_budget_pcs_are_told_the_usage_of_the_others(hass: HomeAssi
         users["kevin"]["used_minutes"] = 31
         testpc.ws.push({"type": "hello", "writable": True, "status": testpc.health_doc})
         testpc.ws.push({"type": "state", "pc": testpc.pc_state, "users": users})
-        await hass.async_block_till_done()
+        await settle(hass)
         assert len(sent(den)) == 1
         # ... but a new connection of Den (it may have restarted) gets the figures right away
         den.ws.push({"type": "hello", "writable": True, "status": den.health_doc})
-        await hass.async_block_till_done()
+        await settle(hass)
         assert len(sent(den)) == 2 and sent(den)[-1]["peers"]["testpc"]["users"]["kevin"]["used_minutes"] == 31
         with patch.object(rollup, "PEER_PUSH_SECONDS", 0):
             users["kevin"]["used_minutes"] = 32
             testpc.ws.push({"type": "state", "pc": testpc.pc_state, "users": users})
-            await hass.async_block_till_done()
+            await settle(hass)
         assert len(sent(den)) == 3 and sent(den)[-1]["peers"]["testpc"]["users"]["kevin"]["used_minutes"] == 32
         assert sent(testpc) == []
 

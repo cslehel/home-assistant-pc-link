@@ -16,7 +16,7 @@ from custom_components.pclink.diagnostics import async_get_config_entry_diagnost
 from custom_components.pclink.rollup import peer_usage
 
 from conftest import make_catalog
-from test_rollup import add_pc, several_pcs
+from test_rollup import add_pc, settle, several_pcs
 
 TAMPER_REASONS = ["agent_silent", "agent_killed", "report_rejected", "clock_changed", "time_zone_changed"]
 
@@ -126,7 +126,7 @@ async def test_shared_budget_pc_is_told_the_bonus_granted_elsewhere(hass: HomeAs
         testpc.ws.push({"type": "state", "pc": testpc.pc_state, "users": users})
         den.ws.push({"type": "hello", "writable": True, "status": den.health_doc})
         den.ws.push({"type": "state", "pc": {**den.pc_state, "shared_budget": True}, "users": den.user_state})
-        await hass.async_block_till_done()
+        await settle(hass)
         sent = [c for c in den.commands if c.get("action") == "peer_usage"][-1]["peers"]["testpc"]["users"]["kevin"]
         assert sent["bonus_local_minutes"] == 20 and sent["bedtime_extension_local_minutes"] == 15 and sent["date"]
         # ... and it is remembered for a PC that is switched off when Home Assistant restarts

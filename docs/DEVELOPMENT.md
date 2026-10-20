@@ -62,7 +62,14 @@ $env:PYTHONPATH = "<stubs>"
 release matter to the tests: `hass.async_block_till_done()` does not wait for
 background tasks (and they do not start eagerly), and while
 `async_remove_entry` runs the entry being deleted is still listed by
-`hass.config_entries.async_entries()`.
+`hass.config_entries.async_entries()`. `eager_start=True` only takes effect on
+Python 3.12 and later, so a local run on 3.12 can pass where CI, which runs
+this release on 3.11, fails: tests that look at what a background task sent
+wait for it with `settle()` from `tests_ha/test_rollup.py`.
+
+The service tests run on Linux in CI, and some behaviour differs from Windows:
+`socket.socketpair()` there is a Unix socket holding only about 200 KB, so a
+test that sends more than that before reading must send from a thread.
 
 The integration must keep working on the oldest supported release and on the
 newest one. Two places adapt to the version at run time: the coordinator

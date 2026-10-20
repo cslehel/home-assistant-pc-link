@@ -314,6 +314,9 @@ def test_service_watch_notices_its_service_end_from_another_process(tmp_path):
     script = tmp_path / "watcher.py"
     script.write_text(_WATCHER, encoding="utf-8")
     service = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(2.5)"])
+    # reaped as soon as it ends: on Linux an unreaped child stays a zombie that still has a pid
+    # and a creation time (a real service is no child of the test)
+    threading.Thread(target=service.wait, daemon=True).start()
     try:
         time.sleep(0.3)
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

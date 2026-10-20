@@ -18,6 +18,8 @@ jobs:
   service:
     name: PC Link service (pure-Python tests)
     runs-on: ubuntu-latest
+    # takes about 2 minutes; a hanging test would otherwise run into GitHub's 6-hour limit
+    timeout-minutes: 15
     strategy:
       matrix:
         python-version: ["3.11", "3.13"]
@@ -32,6 +34,7 @@ jobs:
   integration:
     name: Home Assistant integration (${{ matrix.name }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -56,6 +59,7 @@ jobs:
   hassfest:
     name: hassfest (Home Assistant manifest validation)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       # pinned to a commit (the branch moves): master as of 2026-10; update it now and then
@@ -68,6 +72,7 @@ jobs:
     # runs again automatically once the repository is made public.
     if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       # pinned to a commit (the branch moves): main as of 2026-10; update it now and then
