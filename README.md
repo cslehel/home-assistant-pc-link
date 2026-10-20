@@ -1,5 +1,22 @@
 # Home Assistant PC Link
 
+> [!WARNING]
+> **Experimental.** The Windows program (`pclink.exe`, `pclink-agent.exe`) and
+> the Home Assistant integration are early, experimental releases. Settings,
+> entities and behaviour can still change from one version to the next. Use
+> them at your own risk:
+>
+> - The service runs as SYSTEM. It logs users off, can shut the PC down and
+>   blocks logins by changing the logon hours of Windows accounts. Keep an
+>   administrator account that PC Link does not manage, so that a fault cannot
+>   lock you out. `pclink.exe unblock-all` (as administrator) or uninstalling
+>   gives every account its logins back.
+> - The executables are not code-signed, so SmartScreen or antivirus software
+>   may warn about them (see the [antivirus guide](docs/ANTIVIRUS.md)).
+> - It is a parental-control tool, not a security product: someone with an
+>   administrator account or physical access to the PC can get around it.
+> - It comes without any warranty (see [LICENSE](LICENSE)).
+
 A Python **Windows service** plus a **Home Assistant integration** that connect a
 PC to **Home Assistant**. It enforces per-user screen-time limits (daily, weekly, bedtime, per app and
 per website), blocks logins when time runs out, knows whether somebody is
