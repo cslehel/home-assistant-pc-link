@@ -4,7 +4,22 @@ All notable changes to this project are listed here. Versions follow
 [semantic versioning](https://semver.org/). The release workflow publishes the
 section of the version being tagged as the release notes.
 
-## [Unreleased]
+## [0.4.0] - 2026-10-20
+
+### Install
+
+- **Standalone Windows version:** download `PCLink-0.4.0-windows-x64.zip`
+  below, right-click it, choose **Properties**, tick **Unblock**, extract it
+  and run **install.cmd**. An installed copy is upgraded in place and keeps
+  its configuration. Details:
+  [installation guide](https://github.com/cslehel/home-assistant-pc-link/blob/main/docs/INSTALL.md).
+- **Updating:** PC Link now updates itself from these releases (the *PC Link
+  update* entity in Home Assistant; `updates.auto_install: true` installs new
+  releases without being asked). Version 0.3.0 cannot do that yet: a PC that
+  runs 0.3.0 is upgraded by hand once, as above. A private repository needs
+  `updates.github_token`.
+- **Home Assistant:** update PC Link in HACS, or copy
+  `custom_components/pclink` into your configuration again.
 
 ### Removed
 
