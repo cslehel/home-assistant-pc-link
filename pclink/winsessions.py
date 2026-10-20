@@ -2,6 +2,11 @@
 
 ASTER multiseat gives every "workplace" its own Windows session, so a PC can
 have several *active* sessions at once.  Everything here works per session id.
+
+Seen from session 0, where the service runs, ASTER lists only its first
+workplace as an active session ("Console"); every further workplace is listed
+as a *disconnected* session named "Multiseat", although somebody is sitting at
+it.  Such a session is taken for the active seat it is (:func:`aster_seat`).
 """
 from __future__ import annotations
 
@@ -20,6 +25,16 @@ WTS_SESSION_INFO_EX = 25
 _STATE_NAMES = {0: "active", 1: "connected", 2: "connected", 3: "other", 4: "disconnected", 5: "idle",
                 6: "listen", 7: "reset", 8: "down", 9: "init"}
 _NO_USER_STATES = {"listen", "reset", "down", "init"}   # never a logged-on user: not even asked about
+ASTER_STATION = "multiseat"   # ASTER's station name for every workplace after the first
+
+
+def aster_seat(state: str, station: str) -> bool:
+    """Is this a workplace of ASTER that Windows lists as disconnected? (pure; unit-tested)
+
+    Such a session is in use like any active one.  Its lock flag is not that of the
+    seat either, so whether it is locked is left to its agent."""
+    return state == "disconnected" and (station or "").strip().lower() == ASTER_STATION
+
 
 # WTS_SESSION_* event types delivered through SERVICE_CONTROL_SESSIONCHANGE
 WTS_CONSOLE_CONNECT = 1
@@ -176,6 +191,9 @@ class WindowsSessions:
             else:
                 failed.discard(sid)
             if info is not None:
+                if sid not in known and aster_seat(_STATE_NAMES.get(int(entry.get("State", -1)), ""), info.station):
+                    log.info("session %s (%s) is an ASTER workplace listed as disconnected; taken as active",
+                             sid, info.user)
                 current[sid] = info
                 out.append(info)
         self._known = current
@@ -205,10 +223,13 @@ class WindowsSessions:
         if not user:
             return None  # logon screen / no user
         state = _STATE_NAMES.get(int(entry["State"]), "other")
+        station = str(entry.get("WinStationName") or (ex or {}).get("station") or "")
+        locked = (ex or {}).get("locked")
+        if aster_seat(state, station):
+            state, locked = "active", None
         return SessionInfo(
-            session_id=sid, user=user.lower(), domain=domain,
-            station=str(entry.get("WinStationName") or (ex or {}).get("station") or ""),
-            state=state, locked=(ex or {}).get("locked"), idle_seconds=(ex or {}).get("idle_seconds"),
+            session_id=sid, user=user.lower(), domain=domain, station=station,
+            state=state, locked=locked, idle_seconds=(ex or {}).get("idle_seconds"),
             logon_time=(ex or {}).get("logon_time"),
         )
 

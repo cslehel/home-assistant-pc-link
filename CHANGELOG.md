@@ -294,6 +294,14 @@ section of the version being tagged as the release notes.
 
 ### Fixed
 
+- **ASTER multiseat:** only the first seat was reported. ASTER lists every
+  further workplace to the service as a *disconnected* session named
+  "Multiseat", so those users got no agent, showed as disconnected with
+  unknown app, website, volume and display, and their screen time was neither
+  counted nor limited. Such a session is now taken as the active seat it is;
+  whether it is locked comes from its agent. Agents are also told how many
+  other seats are in use, since inside an ASTER workplace Windows lists none,
+  so one seat's game controller no longer keeps another seat "active".
 - PC sensors froze at their first value for the Home Assistant integration.
 - Agents of sessions with an unchanging status reconnected every 95 seconds.
 - A configuration error during a hot reload could make ticks fail; wrong value

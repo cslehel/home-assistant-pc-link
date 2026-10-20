@@ -5,9 +5,13 @@ each with their own monitor, keyboard and mouse. To Windows, each seat is a
 normal logon **session** with its own session id, so this project handles it
 without anything ASTER-specific:
 
-- **Enumeration.** `WTSEnumerateSessions` returns every session; unlike a
-  single-user PC, several can be in the `active` state at once. Each is tracked
-  independently.
+- **Enumeration.** `WTSEnumerateSessions` returns every session, and each is
+  tracked independently. Seen from the service, ASTER lists only the first
+  workplace as active (station `Console`); every further workplace is listed
+  as *disconnected* with the station name `Multiseat`. PC Link takes such a
+  session as an active seat, and leaves whether it is locked to that seat's
+  agent. A session that is disconnected without that name (switch user) is
+  still a disconnected one.
 - **Per-user accounting.** Time is accrued per user from the sessions that
   belong to them. Two children on two seats burn their own budgets in parallel.
 - **Per-seat agents.** One agent is launched per active session, so the correct

@@ -1645,6 +1645,10 @@ class Orchestrator:
     def _push_agent_status(self, now: datetime, by_user: dict[str, list[SessionInfo]]) -> None:
         if self.agent_server is None:
             return
+        # An agent counts what is the same for the whole PC (a game controller, "keep the display
+        # on") as its own only when no other seat is in use.  It cannot always see the other seats
+        # itself (inside an ASTER workplace Windows lists none), so it is told how many there are.
+        seats = sum(1 for ss in by_user.values() for s in ss if s.state == "active")
         for user, sessions in by_user.items():
             st = self._status(user, now)
             if st.managed and st.enforcing:
@@ -1668,9 +1672,11 @@ class Orchestrator:
                        "focus": st.focus_active, "time_requests": offered}   # what "Ask for more time" offers
             # remembered per seat, and forgotten when its agent (re)connects: every agent gets the
             # status that applies, not only the first seat or the first agent
-            shown = (text, tuple(offered))
             for s in sessions:
-                if self._agent_status_sent.get(s.session_id) != shown and self.agent_server.send(s.session_id, payload):
+                others = seats - (s.state == "active")
+                shown = (text, tuple(offered), others)
+                if self._agent_status_sent.get(s.session_id) != shown and \
+                        self.agent_server.send(s.session_id, dict(payload, other_seats=others)):
                     self._agent_status_sent[s.session_id] = shown
 
     # ------------------------------------------------------------------

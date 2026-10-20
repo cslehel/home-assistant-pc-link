@@ -529,6 +529,9 @@ class Agent:
         self._last_status = data
         text = str(data.get("text", ""))
         self._status_text = text or self._status_text
+        others = data.get("other_seats")
+        if isinstance(others, int) and not isinstance(others, bool):
+            self.presence.service_other_seats = max(0, others)
         remaining = data.get("remaining_minutes")
         if self.tray is None:
             return

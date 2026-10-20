@@ -501,6 +501,9 @@ class PresenceSignals:
         self.display = DisplayStateMonitor()
         self._other_seats = False
         self._seats_checked = 0.0
+        # how many other seats are in use as the service counts them (it sees every ASTER workplace,
+        # which a session of ASTER's does not); None until it said
+        self.service_other_seats: Optional[int] = None
         self.last_quns: Optional[int] = None   # the last SHQueryUserNotificationState, for the notifier
 
     def start(self) -> None:
@@ -514,7 +517,7 @@ class PresenceSignals:
         if now - self._seats_checked >= self.SEATS_CHECK_SECONDS or not self._seats_checked:
             self._seats_checked = now
             self._other_seats = bool(other_active_sessions())
-        return self._other_seats
+        return self._other_seats or bool(self.service_other_seats)
 
     def sample(self, input_idle_seconds: float, fullscreen: bool = False, audio_active: bool = False) -> dict[str, Any]:
         """One set of signals.  ``fullscreen`` / ``audio_active`` describe *this* session; they
