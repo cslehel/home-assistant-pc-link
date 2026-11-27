@@ -1413,7 +1413,9 @@ def parse_user_policy(item: dict[str, Any], defaults: dict[str, Any], shared: Op
     if policy.action not in ("logoff", "lock", "shutdown"):
         raise ConfigError(f"user {name!r}: action must be logoff, lock or shutdown")
     policy.grace_seconds = int(_policy_number(merged.get("grace_seconds"), 60, f"{where}: grace_seconds", 0, 3600))
-    policy.count_idle = _yes_no(merged.get("count_idle"), True, f"{where}: count_idle")
+    # Without a limit the time is only a statistic: idle and away time (a PC left on all
+    # night) would turn "time used" into "time logged in".
+    policy.count_idle = _yes_no(merged.get("count_idle"), not policy.unlimited, f"{where}: count_idle")
     idle_minutes = merged.get("idle_threshold_minutes")
     if idle_minutes is not None:
         policy.idle_threshold_seconds = int(_policy_number(idle_minutes, 10.0, f"{where}: idle_threshold_minutes",

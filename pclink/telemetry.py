@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 
 _GB = 1024 ** 3
 _MB = 1024 ** 2
+BOOT_JITTER_SECONDS = 120.0   # the boot time read from the clock moves by less than this without a reboot
 
 IDLE_PROCESS_NAMES = {"system idle process", "idle"}   # pid 0: its "CPU time" is the time nothing ran
 _VIRTUAL_NIC_HINTS = ("vmware", "virtualbox", "vethernet", "hyper-v", "loopback", "bluetooth", "npcap", "tap-", "wsl",
@@ -207,11 +208,22 @@ class Telemetry:
         # free space of every fixed disk: a sleeping or network-backed volume can keep a call waiting
         self._disks = Background("disk-usage", self.disk_usage, lambda: self.cfg.interval_seconds,
                                  initial={}, min_interval=10.0)
+        self._boot: Optional[float] = None
 
     def stop(self) -> None:
         self._top.stop()
         self._gpu.stop()
         self._disks.stop()
+
+    def boot_time(self) -> float:
+        """When Windows started, as first read.  ``psutil.boot_time()`` is worked out from the
+        clock and moves by seconds whenever the clock is synchronised; a reboot restarts the
+        service anyway, so only a jump of more than BOOT_JITTER_SECONDS is taken as real."""
+        raw = psutil.boot_time()
+        known = getattr(self, "_boot", None)
+        if known is None or abs(raw - known) > BOOT_JITTER_SECONDS:
+            self._boot = known = raw
+        return known
 
     # -- helpers --------------------------------------------------------------
     def _fixed_partitions(self) -> list[Any]:
@@ -332,7 +344,7 @@ class Telemetry:
             snap["ip"] = primary["ipv4"] if primary else None
             snap["broadcast"] = primary.get("broadcast") if primary else None   # where Wake-on-LAN is sent
         try:
-            boot = psutil.boot_time()
+            boot = self.boot_time()
             snap["last_boot"] = datetime.fromtimestamp(boot, tz=timezone.utc).isoformat()
             snap["uptime_hours"] = round((time.time() - boot) / 3600, 2)
         except Exception as exc:  # noqa: BLE001

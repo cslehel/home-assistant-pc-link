@@ -51,6 +51,9 @@ ENFORCE_REPEAT_SECONDS = 30.0  # minimum spacing between repeated enforcement ac
 MAX_TICK_GAP_SECONDS = 120.0   # a longer hole between ticks (sleep, hibernate, stale state) is not screen time
 MAX_FOCUS_MINUTES = 1440       # the longest focus period that can be started by hand
 EXTERNAL_SAVE_STEP_SECONDS = 60.0   # usage on other PCs is written down when it grew by this much
+# How the "time used" statistic of a user that is not managed is counted: in use (input, or a
+# film playing), not merely logged in - idle beyond the threshold and away do not count.
+STATISTICS_POLICY = UserPolicy(name="(statistics)", count_idle=False, count_away=False, count_passive=True)
 TICK_ERROR_LOG_SECONDS = 300.0      # one failing user is logged this often, not on every tick
 AGENT_GRACE_SECONDS = 60.0     # focus mode pauses the budget this long without an agent report (login, relaunch)
 FOCUS_TRUST_SECONDS = 600.0    # ... and, once it stopped doing so, again only after this long with reports throughout
@@ -1381,7 +1384,7 @@ class TimeKeeper:
             rt = _Runtime(day=today, last_tick=rt.last_tick if rt else None)
             self._runtime[user] = rt
         dt = self._elapsed(rt, now_ts)
-        if dt > 0 and any(s.state == "active" and not s.locked for s in sessions):
+        if dt > 0 and any(self.session_counts(s, STATISTICS_POLICY) for s in sessions):
             self.store.add_usage(user, today, active=dt)
 
     def _grace_message(self, policy: UserPolicy, st: TimeStatus) -> str:
