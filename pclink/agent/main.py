@@ -600,8 +600,10 @@ class Agent:
             # way (a session message) when the agent could not show anything.
             self.client.send({"type": "notified", "id": msg.get("id"), "shown": via in (VIA_BALLOON, VIA_BOX), "via": via})
         elif kind == "lock":
-            log.info("service requested session lock")
-            lock_workstation()
+            ok = bool(lock_workstation())
+            log.info("service requested session lock: %s", "done" if ok else "LockWorkStation failed")
+            # the service falls back at once when it failed (an older service ignores the answer)
+            self.client.send({"type": "lock_result", "ok": ok})
         elif kind == "run":
             self._run_command(msg.get("command", ""))
         elif kind == "close":

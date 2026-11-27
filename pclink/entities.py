@@ -42,6 +42,7 @@ USER_TRIGGERS = {
     "presence_away": "left the seat",
     "presence_back": "came back to the seat",
     "app_close_failed": "had an app that could not be closed",
+    "lock_failed": "had a seat that could not be locked",
     "tamper": "may have tampered with PC Link",
     "time_requested": "asked for more time",
     "time_request_approved": "got a time request approved",

@@ -1,20 +1,28 @@
 """Windows logon session enumeration and control (Terminal Services API).
 
-ASTER multiseat gives every "workplace" its own Windows session, so a PC can
-have several *active* sessions at once.  Everything here works per session id.
+Multiseat software gives every seat ("workplace") its own Windows session, so a
+PC can have several sessions in use at once.  Everything here works per session id.
 
-Seen from session 0, where the service runs, ASTER lists only its first
-workplace as an active session ("Console"); every further workplace is listed
-as a *disconnected* session named "Multiseat", although somebody is sitting at
-it.  Such a session is taken for the active seat it is (:func:`aster_seat`).
+Seen from session 0, where the service runs, only the first seat is an active
+session ("Console"); every further seat is listed as a *disconnected* session,
+although somebody is sitting at it:
+
+- ASTER names those sessions "Multiseat".
+- Hydra Multi-Seat gives them no telling name, so while Hydra is on (its flag file
+  or its running service) every disconnected session is taken for a seat.  A
+  session left by "Switch user" looks the same from here and is taken for one too.
+
+Such a session is taken for the active seat it is (:func:`multiseat_seat`).
 """
 from __future__ import annotations
 
 import ctypes
 import logging
+import os
 import sys
+import time
 from ctypes import wintypes
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from .models import SessionInfo
 
@@ -26,14 +34,69 @@ _STATE_NAMES = {0: "active", 1: "connected", 2: "connected", 3: "other", 4: "dis
                 6: "listen", 7: "reset", 8: "down", 9: "init"}
 _NO_USER_STATES = {"listen", "reset", "down", "init"}   # never a logged-on user: not even asked about
 ASTER_STATION = "multiseat"   # ASTER's station name for every workplace after the first
+MULTISEAT_MODES = ("auto", "aster", "hydra", "off")
+SEAT_NAMES = {"aster": "ASTER", "hydra": "Hydra Multi-Seat"}
+HYDRA_SERVICE = "hydra-service"
+HYDRA_FLAG = "hydra-armed.flag"      # in %SystemRoot% while Hydra's seats are on
+HYDRA_CHECK_SECONDS = 60.0
+
+
+def multiseat_seat(state: str, station: str, mode: str = "auto", hydra: bool = False) -> Optional[str]:
+    """Whose seat is this session that Windows lists as disconnected? (pure; unit-tested)
+
+    "aster", "hydra" or None.  Such a session is in use like any active one.  Its lock flag
+    is not that of the seat either, so whether it is locked is left to its agent.  ``hydra``:
+    Hydra Multi-Seat is on (``mode`` "hydra" takes every disconnected session for a seat
+    without asking).  A remote desktop session is never a seat."""
+    if state != "disconnected" or mode == "off":
+        return None
+    name = (station or "").strip().lower()
+    if name == ASTER_STATION and mode in ("auto", "aster"):
+        return "aster"
+    if (mode == "hydra" or (mode == "auto" and hydra)) and not name.startswith("rdp"):
+        return "hydra"
+    return None
 
 
 def aster_seat(state: str, station: str) -> bool:
-    """Is this a workplace of ASTER that Windows lists as disconnected? (pure; unit-tested)
+    """Is this a workplace of ASTER that Windows lists as disconnected?"""
+    return multiseat_seat(state, station, "aster") == "aster"
 
-    Such a session is in use like any active one.  Its lock flag is not that of the
-    seat either, so whether it is locked is left to its agent."""
-    return state == "disconnected" and (station or "").strip().lower() == ASTER_STATION
+
+def _hydra_service_running() -> bool:
+    try:
+        import win32service  # type: ignore
+        import win32serviceutil  # type: ignore
+
+        return win32serviceutil.QueryServiceStatus(HYDRA_SERVICE)[1] == win32service.SERVICE_RUNNING
+    except Exception:  # noqa: BLE001 - not installed, no pywin32, no access: not running as far as we know
+        return False
+
+
+class HydraDetector:
+    """Is Hydra Multi-Seat on?  Its flag file, else its running service; asked at most once a minute."""
+
+    def __init__(self, flag_path: Optional[str] = None, service_running: Callable[[], bool] = _hydra_service_running,
+                 clock: Callable[[], float] = time.monotonic, interval: float = HYDRA_CHECK_SECONDS):
+        self.flag_path = flag_path or os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), HYDRA_FLAG)
+        self._service_running = service_running
+        self._clock = clock
+        self._interval = interval
+        self._checked: Optional[float] = None
+        self._on = False
+
+    def __call__(self) -> bool:
+        now = self._clock()
+        if self._checked is None or now - self._checked >= self._interval:
+            self._checked = now
+            try:
+                on = os.path.exists(self.flag_path) or bool(self._service_running())
+            except Exception:  # noqa: BLE001
+                on = False
+            if on != self._on:
+                log.info("Hydra Multi-Seat is %s", "on: its disconnected sessions are seats" if on else "off")
+            self._on = on
+        return self._on
 
 
 # WTS_SESSION_* event types delivered through SERVICE_CONTROL_SESSIONCHANGE
@@ -103,7 +166,7 @@ def _filetime_to_unix(value: int) -> Optional[float]:
 class WindowsSessions:
     """Session backend used by the service (requires pywin32)."""
 
-    def __init__(self, lock_flag_inverted: bool = False):
+    def __init__(self, lock_flag_inverted: bool = False, multiseat_mode: str = "auto"):
         if sys.platform != "win32":
             raise RuntimeError("WindowsSessions only works on Windows")
         import win32ts  # type: ignore
@@ -120,6 +183,25 @@ class WindowsSessions:
         self.lock_flag_inverted = lock_flag_inverted  # Windows 7 reports LOCK/UNLOCK swapped
         self._known: dict[int, SessionInfo] = {}   # the sessions of the last list, by id
         self._failed: set[int] = set()              # sessions that could not be queried (logged once)
+        self.multiseat_mode = multiseat_mode        # multiseat.mode; the service sets it again on a reload
+        self.hydra = HydraDetector()
+
+    # -- multiseat ----------------------------------------------------------------
+    def _hydra_on(self) -> bool:
+        mode = getattr(self, "multiseat_mode", "auto")
+        if mode == "hydra":
+            return True
+        detector = getattr(self, "hydra", None)
+        return mode == "auto" and detector is not None and bool(detector())
+
+    def multiseat(self) -> Optional[str]:
+        """The multiseat software in use as far as the sessions show: "hydra", "aster" or None."""
+        if getattr(self, "multiseat_mode", "auto") == "off":
+            return None
+        if self._hydra_on():
+            return "hydra"
+        seats = {s.seat for s in getattr(self, "_known", {}).values()}
+        return "aster" if "aster" in seats else None
 
     # -- queries ----------------------------------------------------------------
     def _query_ex(self, session_id: int) -> Optional[dict[str, Any]]:
@@ -172,6 +254,8 @@ class WindowsSessions:
         known: dict[int, SessionInfo] = getattr(self, "_known", {})
         failed: set[int] = getattr(self, "_failed", set())
         current: dict[int, SessionInfo] = {}
+        mode = getattr(self, "multiseat_mode", "auto")
+        hydra = self._hydra_on()
         for entry in raw:
             sid = int(entry["SessionId"])
             if sid == 0:
@@ -179,7 +263,7 @@ class WindowsSessions:
             if _STATE_NAMES.get(int(entry.get("State", -1)), "other") in _NO_USER_STATES:
                 continue  # a listener or a session being set up or torn down: nobody in it
             try:
-                info = self._session(entry, sid)
+                info = self._session(entry, sid, mode, hydra)
             except SessionQueryError as exc:
                 # One session that cannot be asked about must not hide all the others; it
                 # keeps what was last known about it (dropping it would read as a logoff).
@@ -191,16 +275,16 @@ class WindowsSessions:
             else:
                 failed.discard(sid)
             if info is not None:
-                if sid not in known and aster_seat(_STATE_NAMES.get(int(entry.get("State", -1)), ""), info.station):
-                    log.info("session %s (%s) is an ASTER workplace listed as disconnected; taken as active",
-                             sid, info.user)
+                if info.seat and (sid not in known or known[sid].seat != info.seat):
+                    log.info("session %s (%s): %s workplace listed as disconnected; taken as active",
+                             sid, info.user, SEAT_NAMES.get(info.seat, info.seat))
                 current[sid] = info
                 out.append(info)
         self._known = current
         self._failed = failed & {int(e["SessionId"]) for e in raw}
         return out
 
-    def _session(self, entry: Any, sid: int) -> Optional[SessionInfo]:
+    def _session(self, entry: Any, sid: int, mode: str = "auto", hydra: bool = False) -> Optional[SessionInfo]:
         """One listed session as a :class:`SessionInfo`; None when nobody is logged on to it.
         Raises :class:`SessionQueryError` when Windows would not tell."""
         wts = self._wts
@@ -225,12 +309,13 @@ class WindowsSessions:
         state = _STATE_NAMES.get(int(entry["State"]), "other")
         station = str(entry.get("WinStationName") or (ex or {}).get("station") or "")
         locked = (ex or {}).get("locked")
-        if aster_seat(state, station):
+        seat = multiseat_seat(state, station, mode, hydra)
+        if seat:
             state, locked = "active", None
         return SessionInfo(
             session_id=sid, user=user.lower(), domain=domain, station=station,
             state=state, locked=locked, idle_seconds=(ex or {}).get("idle_seconds"),
-            logon_time=(ex or {}).get("logon_time"),
+            logon_time=(ex or {}).get("logon_time"), seat=seat,
         )
 
     # -- control -----------------------------------------------------------------

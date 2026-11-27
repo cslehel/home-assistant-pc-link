@@ -554,6 +554,13 @@ class AgentConfig:
 
 
 @dataclass
+class MultiseatConfig:
+    """Several seats in use at once (ASTER, Hydra Multi-Seat); see docs/MULTISEAT.md."""
+    mode: str = "auto"             # auto | aster | hydra | off: which disconnected sessions are seats in use
+    lock_fallback: str = "logoff"  # a seat that cannot be locked when time is up: logoff | none
+
+
+@dataclass
 class WindowsUpdateConfig:
     enabled: bool = False
     check_interval_hours: float = 6.0
@@ -700,6 +707,7 @@ class Config:
     time_limits: TimeLimitsConfig = field(default_factory=TimeLimitsConfig)
     activity: ActivityConfig = field(default_factory=ActivityConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
+    multiseat: MultiseatConfig = field(default_factory=MultiseatConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     power: PowerConfig = field(default_factory=PowerConfig)
@@ -780,6 +788,13 @@ class Config:
         cfg.hardware_sensors = _fill(HardwareSensorsConfig, raw.get("hardware_sensors"))
         cfg.activity = _fill(ActivityConfig, raw.get("activity"))
         cfg.agent = _fill(AgentConfig, raw.get("agent"))
+        cfg.multiseat = _fill(MultiseatConfig, raw.get("multiseat"))
+        cfg.multiseat.mode = str(cfg.multiseat.mode).strip().lower()
+        cfg.multiseat.lock_fallback = str(cfg.multiseat.lock_fallback).strip().lower()
+        if cfg.multiseat.mode not in ("auto", "aster", "hydra", "off"):
+            raise ConfigError("multiseat.mode must be auto, aster, hydra or off")
+        if cfg.multiseat.lock_fallback not in ("logoff", "none"):
+            raise ConfigError("multiseat.lock_fallback must be logoff or none")
         cfg.storage = _fill(StorageConfig, raw.get("storage"))
         cfg.logging = _fill(LoggingConfig, raw.get("logging"))
         cfg.power = _fill(PowerConfig, raw.get("power"))

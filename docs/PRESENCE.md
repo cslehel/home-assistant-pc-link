@@ -49,7 +49,7 @@ the seat is in when it wakes.
 | Now playing | Windows media transport controls (the `winrt` packages; included in the standalone build) - also music or video in a background browser tab; otherwise the foreground window's title | passive; the `now playing` sensor |
 | Display-required request | `CallNtPowerInformation(SystemExecutionState)` — set while a video player, browser video or game asks Windows to keep the screen on | passive, only when the foreground app is a media app / full-screen |
 | Full-screen D3D / presentation mode | `SHQueryUserNotificationState` | passive |
-| Display state | `RegisterPowerSettingNotification(GUID_SESSION_DISPLAY_STATE)` — per session, so correct for ASTER multiseat; console state as fallback. Also shown by each user's **display** switch in Home Assistant, which can turn the seat's monitor off and on | away (once no input for `display_off_min_idle_seconds`) |
+| Display state | `RegisterPowerSettingNotification(GUID_SESSION_DISPLAY_STATE)` — per session, so correct for multiseat (ASTER, Hydra); console state as fallback. Also shown by each user's **display** switch in Home Assistant, which can turn the seat's monitor off and on | away (once no input for `display_off_min_idle_seconds`) |
 | Windows user presence | `GUID_SESSION_USER_PRESENCE` — Windows' own input-based verdict | idle earlier than our threshold |
 | Screensaver | `SPI_GETSCREENSAVERRUNNING` | away |
 | Lock state | `OpenInputDesktop` | away |

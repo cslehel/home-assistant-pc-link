@@ -46,8 +46,8 @@ class FakeSessions:
     def list_sessions(self):
         if self.fail:
             raise RuntimeError("WTSEnumerateSessions failed")
-        return [SessionInfo(session_id=s.session_id, user=s.user, state=s.state, locked=s.locked,
-                            idle_seconds=s.idle_seconds) for s in self.sessions]
+        return [SessionInfo(session_id=s.session_id, user=s.user, station=s.station, state=s.state, locked=s.locked,
+                            idle_seconds=s.idle_seconds, seat=s.seat) for s in self.sessions]
 
     def logoff(self, sid, wait=False):
         self.logged_off.append(sid)

@@ -364,7 +364,9 @@ time"*, *"entered the grace period"*, *"logged in / logged off"*, *"got login
 blocked / unblocked"*, *"reached bedtime"*, *"started / ended focus mode"*,
 *"is due for a break"*, *"hit an app or site limit"*, *"had an app or tab
 closed"*, *"earned bonus minutes"*, *"had a screenshot taken"*, *"left the
-seat"*, *"came back to the seat"*; for the PC: *"service started"*,
+seat"*, *"came back to the seat"*, *"had a seat that could not be locked"*
+(see [MULTISEAT.md](MULTISEAT.md#a-seat-that-cannot-be-locked)); for the PC:
+*"service started"*,
 *"configuration reloaded"*, *"parent PIN entered"*, *"wrong parent PIN"*,
 *"needs a reboot for updates"*, *"has Windows updates pending"*, *"USB
 devices changed"*, *"printer reported an error"*.

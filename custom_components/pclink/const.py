@@ -73,8 +73,9 @@ ROLLUP_UNIQUE_PREFIX = "pclink-all-pcs:"
 USER_TRIGGERS = [
     "time_up", "warning", "grace_started", "logged_in", "logged_off", "login_blocked", "login_unblocked", "bedtime",
     "focus_started", "focus_ended", "break_due", "app_limit_reached", "app_closed", "reward_claimed",
-    "screenshot_taken", "presence_away", "presence_back", "app_close_failed", "tamper", "time_requested",
-    "time_request_approved", "time_request_denied", "time_request_expired", "profile_changed", "weekly_summary",
+    "screenshot_taken", "presence_away", "presence_back", "app_close_failed", "lock_failed", "tamper",
+    "time_requested", "time_request_approved", "time_request_denied", "time_request_expired", "profile_changed",
+    "weekly_summary",
 ]
 PC_TRIGGERS = [
     "started", "config_reloaded", "parent_unlocked", "pin_wrong", "pin_locked_out", "reboot_pending",

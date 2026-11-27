@@ -283,7 +283,7 @@ class AgentReport:
 
 @dataclass
 class SessionInfo:
-    """A Windows logon session as seen by the service (one per ASTER seat)."""
+    """A Windows logon session as seen by the service (one per multiseat seat)."""
 
     session_id: int
     user: str                     # SAM account name, lower-case
@@ -296,6 +296,9 @@ class SessionInfo:
     report: Optional[AgentReport] = None
     presence: Optional[str] = None        # active | passive | idle | away (see presence.py)
     presence_reason: str = ""
+    # "aster" / "hydra": a multiseat seat that Windows lists as disconnected (taken as active).
+    # Disconnecting it does not lock it, so a lock that does not take is handled differently.
+    seat: Optional[str] = None
 
     @property
     def logged_in(self) -> bool:
@@ -311,6 +314,7 @@ class SessionInfo:
             "idle_seconds": None if self.idle_seconds is None else round(self.idle_seconds),
             "presence": self.presence,
             "presence_reason": self.presence_reason or None,
+            "seat": self.seat,
         }
         if self.report is not None:
             d["display"] = self.report.display_state

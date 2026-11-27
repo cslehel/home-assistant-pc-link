@@ -59,6 +59,7 @@ OTHER_NAME = "other"
 MAX_STORED_NAME = 100
 NOTIFY_ACK_SECONDS = 6.0              # an agent that does not acknowledge a warning this long: the service shows it
 LOCK_CONFIRM_SECONDS = 10.0          # the agent gets this long to lock before a repeated request disconnects instead
+LOCK_RETRY_SECONDS = 30.0            # a seat that could not be locked is not tried again sooner
 UNKNOWN_SITE_CONFIRM_SECONDS = 5.0    # a web app's site unknown this long (same window) before focus mode acts on it
 CLOSE_ESCALATE_SECONDS = 30.0        # a window that is still there this long after being closed gets the next, harder step
 AGENT_EXIT_WINDOW = 600.0             # an agent that exits more than AGENT_EXIT_LIMIT times within this is being killed
@@ -300,6 +301,8 @@ class Orchestrator:
         self._rules_policy_cache: dict[str, tuple[UserPolicy, dict[str, AppRule], UserPolicy]] = {}
         self._presence_cache: dict[str, tuple[float, date, dict[str, float]]] = {}
         self._lock_requested: dict[int, float] = {}   # session -> monotonic time its agent was asked to lock
+        self._lock_enforced: dict[int, bool] = {}     # ... and whether that lock enforces a limit
+        self._lock_failed_at: dict[int, float] = {}   # seat -> when it last could not be locked
         self._pin_notice: Optional[dict[str, Any]] = None
         self._last_api_push = NEVER
         self._started_event_sent = False
@@ -521,7 +524,9 @@ class Orchestrator:
         the main loop.  Only the kinds we ask for are taken, and only so many per agent:
         the rest is dropped here, before it costs the main loop anything."""
         kind = message.get("type") if isinstance(message, dict) else None
-        if kind not in ("screenshot", "closed", "notified", "time_request", "oversized"):
+        if kind not in ("screenshot", "closed", "notified", "time_request", "oversized", "lock_result"):
+            return
+        if kind == "lock_result" and session_id not in self._lock_requested:
             return
         if kind == "notified" and str(message.get("id")) not in self._pending_notes:
             return
@@ -852,7 +857,7 @@ class Orchestrator:
         for sid in list(self._presence):
             if sid not in present:
                 self._presence.pop(sid, None)
-        for per_session in (self._agent_status_sent, self._lock_requested):
+        for per_session in (self._agent_status_sent, self._lock_requested, self._lock_enforced, self._lock_failed_at):
             for sid in [sid for sid in per_session if sid not in present]:
                 per_session.pop(sid, None)
         with self._agent_messages_lock:   # the IPC thread adds to this one (_agent_may_send)
@@ -969,7 +974,7 @@ class Orchestrator:
             self._time_up(action, "logoff")
         elif action.kind == "lock":
             for sid in targets:
-                self._lock_session(sid)
+                self._lock_session(sid, enforce=True)
             self._time_up(action, "lock")
         elif action.kind == "shutdown":
             # anybody else who is logged in - also in a disconnected session (switch user), where
@@ -1014,26 +1019,94 @@ class Orchestrator:
             log.error("logoff of session %s failed: %s", session_id, exc)
         self._reports.pop(session_id, None)
 
-    def _lock_session(self, session_id: int) -> None:
-        # The agent locks the workstation politely; if the session is still unlocked when we
-        # are asked again a while after, it did not (hung or tampered with): disconnect instead.
-        # A second request right behind the first (a button pressed twice) is the same request:
-        # the session list is from the last tick and cannot show the lock yet.
+    def _session_by_id(self, session_id: int) -> Optional[SessionInfo]:
+        return next((s for s in self._last_sessions if s.session_id == session_id), None)
+
+    def _multiseat(self) -> Optional[str]:
+        """The multiseat software in use (shown in the service info): "aster", "hydra" or None."""
+        ask = getattr(self.sessions, "multiseat", None)
+        if callable(ask):
+            try:
+                return ask()
+            except Exception:  # noqa: BLE001 - only a piece of information
+                return None
+        return next((s.seat for s in self._last_sessions if s.seat), None)
+
+    def _lock_session(self, session_id: int, enforce: bool = False) -> None:
+        """Lock one session.  ``enforce``: the lock enforces a limit (time is up, a window that
+        cannot be closed), it is not a button pressed in Home Assistant.
+
+        The agent locks the workstation politely; if the session is still unlocked when we
+        are asked again a while after - or the agent says it could not - it did not (hung,
+        tampered with, or a seat that Windows will not lock): :meth:`_lock_fallback`.
+        A second request right behind the first (a button pressed twice) is the same request:
+        the session list is from the last tick and cannot show the lock yet."""
         mono = self._mono()
+        session = self._session_by_id(session_id)
+        if session is not None and session.locked:
+            self._lock_failed_at.pop(session_id, None)   # it is locked: a later failure is a new one
+            return
+        if mono - self._lock_failed_at.get(session_id, NEVER) < LOCK_RETRY_SECONDS:
+            return
         since = mono - self._lock_requested.get(session_id, NEVER)
         if 0 <= since < LOCK_CONFIRM_SECONDS:
             return
-        still_unlocked = any(s.session_id == session_id and s.state == "active" and not s.locked for s in self._last_sessions)
+        still_unlocked = session is not None and session.state == "active" and not session.locked
         retry = still_unlocked and since < 300
         if not retry and self.agent_server is not None and self.agent_server.send(session_id, {"type": "lock"}):
             self._lock_requested[session_id] = mono
+            self._lock_enforced[session_id] = enforce
             return
         self._lock_requested.pop(session_id, None)
+        self._lock_enforced.pop(session_id, None)
+        self._lock_fallback(session_id, enforce)
+
+    def _lock_result(self, session_id: int, message: dict[str, Any]) -> None:
+        """The agent's answer to "lock".  LockWorkStation failed: the fallback now, not at the
+        next try (an older agent does not answer; the next try finds out all the same)."""
+        if message.get("ok") is not False or session_id not in self._lock_requested:
+            return
+        session = self._session_by_id(session_id)
+        if session is not None and session.locked:
+            return   # locked after all (asked again while it already was)
+        log.warning("the agent in session %s could not lock it", session_id)
+        self._lock_requested.pop(session_id, None)
+        self._lock_fallback(session_id, self._lock_enforced.pop(session_id, False))
+
+    def _lock_fallback(self, session_id: int, enforce: bool) -> None:
+        """A session that the agent did not lock.  An ordinary one is disconnected, which shows
+        the lock screen.  A multiseat seat is not: disconnecting does nothing on ASTER and makes
+        Hydra repair the seat (:meth:`_seat_lock_failed`)."""
+        session = self._session_by_id(session_id)
+        if session is not None and session.seat:
+            self._seat_lock_failed(session, enforce)
+            return
         if self.sessions is not None:
             try:
                 self.sessions.disconnect(session_id)
             except Exception as exc:  # noqa: BLE001
                 log.error("lock (disconnect) of session %s failed: %s", session_id, exc)
+
+    def _seat_lock_failed(self, session: SessionInfo, enforce: bool) -> None:
+        """A seat that could not be locked.  When the lock enforces a limit, the seat is logged
+        off instead (``multiseat.lock_fallback: logoff``): a seat that stays usable after time
+        ran out is what must not happen.  Otherwise (``none``, or a lock from Home Assistant)
+        it is only reported, and an enforcing lock is asked for again every LOCK_RETRY_SECONDS."""
+        sid, user = session.session_id, session.user
+        fallback = self.cfg.multiseat.lock_fallback if enforce else "none"
+        first = sid not in self._lock_failed_at
+        self._lock_failed_at[sid] = self._mono()
+        if fallback == "logoff":
+            log.warning("session %s (%s, %s seat) could not be locked; logging it off", sid, user, session.seat)
+            self.notify_sessions([sid], "Computer time", "This seat could not be locked, so you are being logged off.",
+                                 "critical")
+            self._logoff_session(sid)
+        elif first:
+            log.warning("session %s (%s, %s seat) could not be locked%s", sid, user, session.seat,
+                        "; asking its agent again" if enforce else "")
+        if fallback == "logoff" or first:
+            self.store.log_event(user, "lock_failed", f"session={sid} seat={session.seat} fallback={fallback}")
+            self._emit_user_event(user, "lock_failed", session=sid, seat=session.seat, fallback=fallback)
 
     def notify_sessions(self, session_ids: list[int], title: str, message: str, level: str = "info") -> None:
         """Show a message in these sessions: through the agent (a balloon), or - when there is
@@ -1328,7 +1401,7 @@ class Orchestrator:
                 log.warning("%s could not be closed for %s; locking session %s", fg.name, user, session.session_id)
                 self.store.log_event(user, "app_close_failed", f"{fg.name} rule={decision.slug}")
                 self._emit_user_event(user, "app_close_failed", rule=decision.slug, app=fg.name)
-            self._lock_session(session.session_id)
+            self._lock_session(session.session_id, enforce=True)
             return
         tab = closing["step"] == "tab"
         message = {"type": "close", "pid": fg.pid, "name": fg.name, "title": fg.title, "tab": tab, "reason": decision.title}
@@ -2156,6 +2229,7 @@ class Orchestrator:
             "gpu_backend": getattr(getattr(self.telemetry, "gpu", None), "name", None),
             "config": self.cfg.source_path,
             "block_method": self.cfg.time_limits.block_method,
+            "multiseat": self._multiseat(),
             # the zone the service keeps to: configured, else pinned at the first run (_pin_zone)
             "time_zone": self.cfg.time_limits.time_zone
                          or (f"{self._pinned_zone} (pinned)" if self._own_clock and self._pinned_zone else "local"),
@@ -2973,6 +3047,8 @@ class Orchestrator:
             self._emit_user_event(user, "screenshot_taken", bytes=len(data))
         elif kind == "closed":
             self._close_result(session_id, message)
+        elif kind == "lock_result":
+            self._lock_result(session_id, message)
         elif kind == "notified":
             self._notified(session_id, message)
         elif kind == "time_request":
@@ -3071,6 +3147,8 @@ class Orchestrator:
             self.classifier = classifier
             self.pin.update_config(new_cfg.time_limits)
             self.power.delay = max(0, int(new_cfg.power.shutdown_delay_seconds))
+            if self.sessions is not None and hasattr(self.sessions, "multiseat_mode"):
+                self.sessions.multiseat_mode = new_cfg.multiseat.mode
             if self.entities is not None:
                 self.entities.cfg = new_cfg
             if self.devices is not None:
@@ -3377,7 +3455,7 @@ def build_orchestrator(cfg: Config) -> Orchestrator:
         from .launcher import AgentLauncher
         from .winsessions import WindowsSessions
 
-        sessions = WindowsSessions()
+        sessions = WindowsSessions(multiseat_mode=cfg.multiseat.mode)
         if cfg.agent.enabled:
             launcher = AgentLauncher(cfg.agent, agent_settings(cfg))
     else:

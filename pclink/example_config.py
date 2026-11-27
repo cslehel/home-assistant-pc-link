@@ -59,8 +59,9 @@ hardware_sensors:
 
 # ----------------------------------------------------------------------
 # Time limits. One block per Windows user account (the SAM login name).
-# ASTER seats are ordinary Windows sessions, so several users can be
-# active at once and each is tracked and limited independently.
+# Multiseat seats (ASTER, Hydra Multi-Seat) are ordinary Windows sessions, so
+# several users can be active at once and each is tracked and limited
+# independently (see multiseat: below).
 # ----------------------------------------------------------------------
 time_limits:
   enabled: true
@@ -167,7 +168,7 @@ time_limits:
       warn_at_minutes: [30, 15, 5, 1]
       action: logoff             # logoff | lock | shutdown
       grace_seconds: 60          # warning-to-action countdown
-      count_idle: false          # idle time does not consume the budget
+      count_idle: false          # idle time does not consume the budget (default: true, false without a limit)
       idle_threshold_minutes: 10 # ...once no input for this long
       # count_away: false        # monitor asleep / screensaver / Windows says absent (default: same as count_idle)
       count_passive: true        # watching a film or listening (no input) still counts
@@ -194,7 +195,8 @@ time_limits:
       action: lock
       breaks: false
 
-    - name: dad                  # parents: statistics only, no limit
+    - name: dad                  # parents: statistics only, no limit; time in use is counted,
+                                 # not idle / away time (count_idle: true counts that too)
       unlimited: true
     - name: mum
       unlimited: true
@@ -304,6 +306,12 @@ agent:
   volume_control: true           # volume / mute entities per user
   display_control: true          # a "display" switch per user: turn that seat's monitor off / on
   watchdog_seconds: 90           # restart an agent that runs but has been silent this long (0: never)
+
+multiseat:                       # several seats in use at once (docs/MULTISEAT.md)
+  mode: auto                     # auto: ASTER seats by their name, Hydra Multi-Seat seats while Hydra is on
+                                 # aster / hydra: only that one; off: a disconnected session is never a seat
+  lock_fallback: logoff          # a seat that cannot be locked when its time is up (action: lock) is
+                                 # logged off; none: only report it (event "lock_failed") and keep asking
 
 logging:
   level: INFO

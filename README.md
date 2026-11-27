@@ -24,9 +24,9 @@ really sitting at each seat, and publishes rich PC telemetry, hardware sensor
 readings, power controls and activity statistics (gaming vs. browsing, per
 website, now playing).
 
-It is built for machines running **ASTER multiseat**, where several users are
-logged in and active at the same time: every Windows session (seat) is tracked
-and limited independently.
+It is built for machines running multiseat software - **ASTER** or **Hydra
+Multi-Seat** - where several users are logged in and active at the same time:
+every Windows session (seat) is tracked and limited independently.
 
 > **Platform:** the service runs on Windows 10/11. The code imports and its
 > full test suite runs on any OS, but session control, login blocking and the
@@ -161,7 +161,7 @@ Home Assistant                 PCLink service (LocalSystem, session 0)
    all-PCs roll-up)                │  shared budgets (other PCs' usage via HA)
                                    │
                                    └─ localhost socket ─► per-session agents
-                                    (one per ASTER seat, run as that user)
+                                    (one per seat, run as that user)
                                     foreground · idle · controller · display state
                                     audio/volume · URL · now playing · tray
                                     close app/tab · screenshot (on request)
@@ -183,7 +183,7 @@ during the outage are deliberately not replayed. Details in
 [docs/HOMEASSISTANT.md](docs/HOMEASSISTANT.md#what-happens-when-the-connection-to-home-assistant-drops).
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design and
-[docs/MULTISEAT.md](docs/MULTISEAT.md) for ASTER specifics.
+[docs/MULTISEAT.md](docs/MULTISEAT.md) for ASTER and Hydra Multi-Seat specifics.
 
 ---
 

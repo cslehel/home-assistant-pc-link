@@ -95,6 +95,7 @@
       "presence_away": "{subtype} left the seat",
       "presence_back": "{subtype} came back to the seat",
       "app_close_failed": "{subtype} had an app that could not be closed",
+      "lock_failed": "{subtype} had a seat that could not be locked",
       "tamper": "{subtype} may have tampered with PC Link",
       "time_requested": "{subtype} asked for more time",
       "time_request_approved": "{subtype} got a time request approved",
