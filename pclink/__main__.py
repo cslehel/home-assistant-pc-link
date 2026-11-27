@@ -120,6 +120,8 @@ def cmd_check_config(argv: list[str]) -> int:
               "prints the api: block to paste in; see docs/HOMEASSISTANT.md)")
     print(f"  block:  {tl.block_method}; parent PIN: {'set' if tl.pin_enabled else 'not set'}; "
           f"shared budget: {tl.shared_budget}; week starts {tl.week_start}; time zone: {tl.time_zone or 'the PC setting'}")
+    print(f"  multiseat: {cfg.multiseat.mode} (ASTER / Hydra Multi-Seat seats); a seat that cannot be locked: "
+          f"{cfg.multiseat.lock_fallback}")
     extras = []
     if cfg.api.enabled:
         extras.append(f"api http://{cfg.api.host}:{cfg.api.port}/" + ("" if cfg.api.token else " (read-only: no token)"))
