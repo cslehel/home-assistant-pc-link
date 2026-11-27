@@ -40,9 +40,10 @@ the API without a token (see [API.md](API.md#authentication)).
 
 ### 2. In Home Assistant: install the integration
 
-**HACS:** HACS → Integrations → ⋮ → *Custom repositories* → add
-`https://github.com/cslehel/home-assistant-pc-link` as *Integration* → install
-**PC Link** → restart Home Assistant.
+**Marketplace / HACS:** Settings → Marketplace (Home Assistant 2026.11 and
+newer; HACS on older releases) → search **PC Link** → install → restart Home
+Assistant. Until it is listed there: ⋮ → *Custom repositories* → add
+`https://github.com/cslehel/home-assistant-pc-link` as *Integration* first.
 
 **Manual:** copy `custom_components/pclink/` from this repository into your
 Home Assistant `config/custom_components/` folder and restart.

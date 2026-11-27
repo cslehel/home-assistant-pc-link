@@ -62,8 +62,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
-      # pinned to a commit (the branch moves): master as of 2026-10; update it now and then
-      - uses: home-assistant/actions/hassfest@50baf3a307f87100cf550d4ae127746595030d5d
+      # pinned to a commit (the branch moves): master as of 2026-11-27. Keep it recent: the
+      # HACS default catalog runs the newest hassfest on a submission (brand images included)
+      - uses: home-assistant/actions/hassfest@9e9565e68f5a70d874202871f4c4064d23814235
 
   hacs:
     name: HACS validation
@@ -75,10 +76,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
-      # pinned to a commit (the branch moves): main as of 2026-10; update it now and then
+      # pinned to a commit (the branch moves): main as of 2026-11-27; it runs the
+      # ghcr.io/hacs/action:main image whatever commit it is. No check is ignored - the
+      # HACS default catalog accepts none. The brand images are in
+      # custom_components/pclink/brand/ (Home Assistant 2026.3+).
       - uses: hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa
         with:
           category: integration
-          # The brands check needs the "pclink" domain in home-assistant/brands
-          # (submit the logo there before requesting inclusion in the HACS default store).
-          ignore: brands

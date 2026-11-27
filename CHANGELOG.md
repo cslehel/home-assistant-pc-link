@@ -4,6 +4,62 @@ All notable changes to this project are listed here. Versions follow
 [semantic versioning](https://semver.org/). The release workflow publishes the
 section of the version being tagged as the release notes.
 
+## [0.5.0] - 2026-11-27
+
+### Install
+
+- **Standalone Windows version:** download `PCLink-0.5.0-windows-x64.zip`
+  below, right-click it, choose **Properties**, tick **Unblock**, extract it
+  and run **install.cmd**. An installed copy is upgraded in place and keeps
+  its configuration; a PC with 0.4.x updates itself (the *PC Link update*
+  entity in Home Assistant). Details:
+  [installation guide](https://github.com/cslehel/home-assistant-pc-link/blob/main/docs/INSTALL.md).
+- **Home Assistant:** update PC Link in the Marketplace (Home Assistant
+  2026.11 and newer) or HACS, then restart Home Assistant. The new device
+  trigger needs the new integration.
+
+### Added
+
+- **Hydra Multi-Seat** ([hydramultiseat.com](https://hydramultiseat.com)) is
+  supported next to ASTER. While Hydra is on (its flag file or its running
+  service), every disconnected session with a user is taken for a seat in
+  use. New section `multiseat:` with `mode: auto | aster | hydra | off`; the
+  Service sensor's attributes show what was detected (`multiseat`). Not yet
+  tested on a live Hydra PC; see
+  [Multiseat](https://github.com/cslehel/home-assistant-pc-link/blob/main/docs/MULTISEAT.md),
+  also for the *Switch user* caveat.
+- Device trigger and event **"… had a seat that could not be locked"**
+  (`lock_failed`).
+- The agent tells the service whether locking its session worked.
+
+### Fixed
+
+- **A seat that could not be locked stayed usable.** On an ASTER PC a
+  child's seat was not locked when time ran out (`action: lock`), and the
+  fallback - disconnecting the session - does nothing to an ASTER seat (and
+  makes Hydra repair a seat). When the lock enforces a limit and the agent
+  could not lock the seat, or it still reads unlocked at the next try, the
+  seat is now **logged off** after a notice (`multiseat.lock_fallback:
+  logoff`, the default; `none` only reports it). A lock pressed in Home
+  Assistant never logs a seat off. Ordinary sessions keep the disconnect
+  fallback.
+- **"Last boot"** no longer changes by a few seconds without a reboot (the
+  boot time was worked out from the clock, which Windows keeps adjusting).
+
+### Changed
+
+- **"Time used" of users without a limit** (not listed, or `unlimited: true`)
+  counts time in use only. It used to count every minute of an unlocked
+  session, so a PC left on overnight showed the whole day since midnight.
+  Idle time beyond the idle threshold, away and locked time no longer count
+  for them (the same as `count_idle: false`); a listed user can set
+  `count_idle: true` to count it again. Users with a limit are unchanged.
+- A session that is already locked is no longer asked to lock again every
+  30 seconds while its user is out of time.
+- Repository ready for the Home Assistant Marketplace (HACS default
+  catalog): HACS validation without ignored checks, current hassfest,
+  `hacs.json` without the retired `render_readme`.
+
 ## [0.4.1] - 2026-10-20
 
 ### Install

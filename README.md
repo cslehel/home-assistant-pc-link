@@ -203,6 +203,11 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design and
    the service is installed with tamper resistance (see
    [docs/SECURITY.md](docs/SECURITY.md)) and started.
 
+The zip is built from this repository's source on GitHub Actions by the
+[build workflow](.github/workflows/build.yml) when a version is tagged
+([release workflow](.github/workflows/release.yml)); nothing in a release is
+built by hand, and the Home Assistant integration contains no executables.
+
 Upgrade by running the new version's **install.cmd**; settings and statistics
 are kept. Uninstall with **uninstall.cmd**, which gives every managed user their
 logon rights back. Commands such as
@@ -238,11 +243,17 @@ python -m pclink setup-api
 New-NetFirewallRule -DisplayName "PC Link API" -Direction Inbound -Protocol TCP -LocalPort 47392 -Action Allow -Profile Private
 ```
 
-In Home Assistant, install **PC Link** from HACS (add this repository as a
-custom *Integration* repository) or copy `custom_components/pclink/` into
-`config/custom_components/`, restart, then Settings → Devices & services: the
-PC is listed as *Discovered*; enter the token. A device with every entity
-appears, plus `pclink.*` actions and device triggers.
+In Home Assistant, install **PC Link** from the **Marketplace** (Settings →
+Marketplace; HACS is built into Home Assistant since 2026.11) or, on an older
+release, from **HACS**. Until PC Link is listed there, add this repository
+first as a custom repository of the type *Integration*:
+
+[![Open your Home Assistant instance and open this repository.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=cslehel&repository=home-assistant-pc-link&category=integration)
+
+Or copy `custom_components/pclink/` into `config/custom_components/`. Restart,
+then Settings → Devices & services: the PC is listed as *Discovered*; enter the
+token. A device with every entity appears, plus `pclink.*` actions and device
+triggers. The integration needs Home Assistant 2024.3 or newer.
 
 See [docs/HOMEASSISTANT.md](docs/HOMEASSISTANT.md) for the setup, the entity
 list, the actions, example dashboard cards and automations.

@@ -1,7 +1,7 @@
 """Selects (a choice from a list the PC offers)."""
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Optional
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry

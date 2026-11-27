@@ -1,14 +1,13 @@
 """Numbers (limits, bonus minutes, bedtime extension, focus duration, volume, rule limits)."""
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Optional
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .coordinator import PclinkCoordinator
 from .entity import PclinkEntity, async_setup_platform_entities
 
 

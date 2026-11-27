@@ -10,7 +10,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
-from .coordinator import PclinkCoordinator
 from .entity import PclinkEntity, async_setup_platform_entities
 from .rollup import async_setup_rollup_entities
 
